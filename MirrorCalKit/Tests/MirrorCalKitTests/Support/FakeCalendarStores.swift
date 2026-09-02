@@ -66,10 +66,15 @@ final class FakeDestinationStore: DestinationCalendarStore, @unchecked Sendable 
         return Array(storedEvents.values)
     }
 
+    /// Round-trips the stamp through `encoded`/`decode` exactly as a real CalDAV store would —
+    /// storing `content.stamp` directly would skip the one boundary a written-then-read-back
+    /// stamp actually has to survive, which is precisely how a stamp that decodes to something
+    /// different than it encoded (an empty external identifier, for instance) could pass 57 green
+    /// tests while being broken in real use.
     private func event(identifier: String, content: MirrorContent) -> DestinationEvent {
         DestinationEvent(
             identifier: identifier,
-            stamp: content.stamp,
+            stamp: MirrorStamp.decode(content.stamp.encoded),
             title: content.title,
             location: content.location,
             notes: content.notes,

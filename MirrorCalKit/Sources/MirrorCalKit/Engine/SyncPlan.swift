@@ -24,12 +24,36 @@ public struct SyncPlan: Sendable, Equatable {
         public let reason: DeletionReason
     }
 
+    /// Two or more distinct *source* occurrences producing the same `MirrorStamp.key` — itself a
+    /// form of drift, on the source side rather than the destination side. `SyncEngine` mirrors
+    /// exactly one deterministic survivor (never zero, never both — see `desiredContent`) and
+    /// records every collision here, the source-side counterpart to a destination-side
+    /// `DeletionReason.duplicateStamp`, so a log can tell "ambiguous source data" apart from
+    /// ordinary churn.
+    public struct SourceCollision: Sendable, Equatable {
+        public let key: String
+        /// How many colliding source occurrences produced this key — always >= 2.
+        public let count: Int
+
+        public init(key: String, count: Int) {
+            self.key = key
+            self.count = count
+        }
+    }
+
     public var creations: [MirrorContent] = []
     public var updates: [Update] = []
     public var deletions: [Deletion] = []
     /// The full content of everything that already matched — not just a count — so a caller can
     /// rebuild a `SyncCache` from the plan alone without asking the engine again.
     public var unchanged: [MirrorContent] = []
+    public var sourceCollisions: [SourceCollision] = []
+    /// How many source occurrences this run could not mirror at all because
+    /// `MirrorContent.mirroring(_:configuration:)` refused them — currently only an empty
+    /// external identifier. Never silently absorbed into `unchanged` or dropped with no trace;
+    /// see `MirrorContent.mirroring(_:configuration:)` for why refusing outright is safer than
+    /// minting a stamp guaranteed not to survive its own round trip.
+    public var unstampableSourceEvents: Int = 0
 
     public var isEmpty: Bool { creations.isEmpty && updates.isEmpty && deletions.isEmpty }
 }

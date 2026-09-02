@@ -72,13 +72,20 @@ public enum ContentHasher: Sendable {
     private static func fnv1a(_ fields: [String]) -> String {
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         let prime: UInt64 = 0x0000_0100_0000_01b3
-        // Pipe-joined so a boundary between two empty fields cannot collide with a boundary
-        // between one field holding "a|b" and the next holding nothing — matches Android's own
-        // pipe-joined hash input for the same reason.
-        for byte in fields.joined(separator: "|").utf8 {
+        // Each field is escaped before joining, so a "|" or "\" occurring *inside* a real field
+        // (a title like "Standup | Backend team") can never be mistaken for the delimiter itself
+        // — an unescaped join makes "a|b" + "c" and "a" + "b|c" indistinguishable once flattened.
+        for byte in fields.map(escaped).joined(separator: "|").utf8 {
             hash ^= UInt64(byte)
             hash = hash &* prime
         }
         return String(hash, radix: 16)
+    }
+
+    /// Backslash-escapes the escape character itself first, then the delimiter — the standard
+    /// order for this to be reversible, though nothing here ever needs to reverse it; the hash
+    /// only needs two different field combinations to never join into the same string.
+    private static func escaped(_ field: String) -> String {
+        field.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "|", with: "\\|")
     }
 }

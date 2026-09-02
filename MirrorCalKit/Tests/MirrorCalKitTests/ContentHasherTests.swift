@@ -81,4 +81,15 @@ final class ContentHasherTests: XCTestCase {
             ContentHasher.hash(value), ContentHasher.hash(value),
             "the hash must not depend on process-local randomization")
     }
+
+    /// A pipe-joined hash without escaping is only unambiguous when no field itself contains the
+    /// delimiter — a real meeting title like "Standup | Backend team" breaks that assumption, and
+    /// two different (title, location) pairs can flatten into the identical joined string.
+    func testAFieldContainingTheDelimiterCannotCollideWithAnAdjacentField() async {
+        let contentA = content(title: "a|b", location: "c")
+        let contentB = content(title: "a", location: "b|c")
+        XCTAssertNotEqual(
+            ContentHasher.hash(contentA), ContentHasher.hash(contentB),
+            "two different field combinations must never hash equal just because a field contains the delimiter")
+    }
 }

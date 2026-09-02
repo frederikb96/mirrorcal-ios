@@ -10,9 +10,13 @@ public enum DestinationGuardError: Error, Sendable, Equatable {
 public enum DestinationGuard: Sendable {
     /// Called once, when a destination calendar is chosen in settings — never during an ordinary
     /// sync, and never on a schedule. `SyncEngine.plan` enforces the complementary half of this
-    /// guarantee on every run: an unstamped event is never in the set a plan can reference at
-    /// all, so nothing downstream of a passed check can later delete one anyway. This function
-    /// exists so the mistake is refused before it is even configured, with a number attached.
+    /// guarantee on every run: an unstamped event, or one stamped by a *different*
+    /// `SyncConfiguration.installationIdentifier`, is never in the set a plan can reference at
+    /// all, so nothing downstream of a passed check can later delete one anyway — which is also
+    /// why this check does not need to reject a calendar merely because another installation's
+    /// stamped events are already in it; a shared destination is exactly the case that guarantee
+    /// exists for. This function exists so the *unstamped* mistake specifically is refused before
+    /// it is even configured, with a number attached.
     public static func validateForConfiguration(existingEvents: [DestinationEvent]) -> Result<
         Void, DestinationGuardError
     > {

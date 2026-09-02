@@ -39,10 +39,15 @@ public struct MirrorContent: Sendable, Equatable {
 
     /// Applies `configuration`'s field policy and availability degradation to one source
     /// occurrence. The only place a `FieldPolicy` is ever interpreted against real event data.
+    ///
+    /// Permissive on purpose — it stamps whatever `instance.externalIdentifier` holds, empty
+    /// string included, so tests can construct any shape directly. `mirroring(_:configuration:)`
+    /// below is the validating entry point real sync flow uses instead.
     public init(mirroring instance: SourceEventInstance, configuration: SyncConfiguration) {
         self.init(
             stamp: MirrorStamp(
-                sourceExternalIdentifier: instance.externalIdentifier, occurrenceStart: instance.occurrenceStart),
+                sourceExternalIdentifier: instance.externalIdentifier, occurrenceStart: instance.occurrenceStart,
+                installationIdentifier: configuration.installationIdentifier),
             title: configuration.titlePolicy.apply(to: instance.title) ?? "",
             location: configuration.locationPolicy.apply(to: instance.location),
             notes: configuration.descriptionPolicy.apply(to: instance.notes),
@@ -53,5 +58,18 @@ public struct MirrorContent: Sendable, Equatable {
                 supportedByDestination: configuration.supportedDestinationAvailabilities),
             timeZoneIdentifier: instance.isAllDay ? nil : instance.timeZoneIdentifier
         )
+    }
+
+    /// `nil` when `instance.externalIdentifier` is empty — Apple documents
+    /// `calendarItemExternalIdentifier` as optional, and an empty identifier encodes into a stamp
+    /// that `MirrorStamp.decode` correctly refuses to read back (by design — see its doc comment).
+    /// Minting one anyway would produce a destination event that is written once, decodes as
+    /// permanently unstamped on every following sync, and is therefore never recognised as
+    /// already mirrored — recreated forever rather than converging. `SyncEngine` calls this,
+    /// never the plain initializer above, when turning a live source occurrence into content to
+    /// mirror.
+    public static func mirroring(_ instance: SourceEventInstance, configuration: SyncConfiguration) -> MirrorContent? {
+        guard !instance.externalIdentifier.isEmpty else { return nil }
+        return MirrorContent(mirroring: instance, configuration: configuration)
     }
 }

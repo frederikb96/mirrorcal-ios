@@ -12,18 +12,29 @@ public struct SyncConfiguration: Sendable, Equatable {
     /// What `EKCalendar.supportedEventAvailabilities` reports for the destination calendar, read
     /// once and passed in rather than assumed — see `EventAvailability.degraded`.
     public var supportedDestinationAvailabilities: Set<EventAvailability>
+    /// Identifies this MirrorCal installation/configuration. `SyncEngine` never treats an event
+    /// stamped with a *different* value as one of its own — never matching it, updating it, or
+    /// deleting it — which is what makes it safe for two independent installs (say, two people
+    /// each mirroring their own work calendar) to write into one shared destination calendar
+    /// without either one able to touch the other's events. The shared default lets a
+    /// single-install setup work exactly as before: nothing distinguishes it from itself. The app
+    /// target is expected to generate and persist a real per-install identifier (a UUID minted
+    /// once, e.g.) the moment more than one installation sharing a destination becomes possible.
+    public var installationIdentifier: String
 
     public init(
         titlePolicy: FieldPolicy = .copy,
         descriptionPolicy: FieldPolicy = .drop,
         locationPolicy: FieldPolicy = .drop,
         excludedTitles: Set<String> = [],
-        supportedDestinationAvailabilities: Set<EventAvailability> = Set(EventAvailability.allCases)
+        supportedDestinationAvailabilities: Set<EventAvailability> = Set(EventAvailability.allCases),
+        installationIdentifier: String = "default"
     ) {
         self.titlePolicy = titlePolicy
         self.descriptionPolicy = descriptionPolicy
         self.locationPolicy = locationPolicy
         self.excludedTitles = excludedTitles
         self.supportedDestinationAvailabilities = supportedDestinationAvailabilities
+        self.installationIdentifier = installationIdentifier
     }
 }

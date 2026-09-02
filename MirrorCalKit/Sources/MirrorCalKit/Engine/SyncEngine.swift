@@ -26,8 +26,12 @@ public struct SyncEngine: Sendable {
     ) -> SyncPlan {
         var plan = SyncPlan()
 
-        let desiredByKey = desiredContent(from: source, configuration: configuration)
-        let observedByKey = collapsingDuplicates(groupedStampedDestinationEvents(destination), into: &plan)
+        let desired = desiredContent(from: source, configuration: configuration)
+        let desiredByKey = desired.byKey
+        plan.sourceCollisions = desired.collisions
+        plan.unstampableSourceEvents = desired.unstampableCount
+        let observedByKey = collapsingDuplicates(
+            groupedStampedDestinationEvents(destination, configuration: configuration), into: &plan)
 
         for (key, content) in desiredByKey {
             guard let existing = observedByKey[key] else {
@@ -48,14 +52,19 @@ public struct SyncEngine: Sendable {
         return sorted(plan)
     }
 
-    /// Every stamped event, unconditionally — not only the ones the current source would still
-    /// produce, and including every copy of a duplicate stamp: reset does not need a survivor,
-    /// it deletes all of them. "Stamped" is decided by the exact same test `plan` uses (`event.
-    /// stamp != nil`), so reset and an ordinary sync agree on what "ours" means by construction
-    /// rather than by two implementations happening to match.
-    public func resetPlan(destination: [DestinationEvent]) -> [SyncPlan.Deletion] {
+    /// Every stamped event *this configuration wrote*, unconditionally — not only the ones the
+    /// current source would still produce, and including every copy of a duplicate stamp: reset
+    /// does not need a survivor, it deletes all of them. "Ours" is decided by the exact same test
+    /// `plan` uses (`event.stamp != nil` and `stamp.installationIdentifier ==
+    /// configuration.installationIdentifier`), so reset and an ordinary sync agree on what
+    /// belongs to this install by construction rather than by two implementations happening to
+    /// match — a reset must never reach into another install's share of a shared destination
+    /// calendar any more than an ordinary sync's delete pass may.
+    public func resetPlan(
+        destination: [DestinationEvent], configuration: SyncConfiguration = SyncConfiguration()
+    ) -> [SyncPlan.Deletion] {
         destination
-            .filter { $0.stamp != nil }
+            .filter { $0.stamp?.installationIdentifier == configuration.installationIdentifier }
             .map { SyncPlan.Deletion(destinationIdentifier: $0.identifier, reason: .reset) }
             .sorted { $0.destinationIdentifier < $1.destinationIdentifier }
     }
@@ -80,7 +89,9 @@ public struct SyncEngine: Sendable {
             updated: plan.updates.count,
             deleted: plan.deletions.count,
             unchanged: plan.unchanged.count,
-            duplicatesRemoved: duplicatesRemoved
+            duplicatesRemoved: duplicatesRemoved,
+            sourceCollisions: plan.sourceCollisions.count,
+            unstampableSourceEvents: plan.unstampableSourceEvents
         )
     }
 
@@ -110,32 +121,70 @@ public struct SyncEngine: Sendable {
 
     // MARK: - Private
 
+    /// Grouped by key first, exactly like `groupedStampedDestinationEvents` below, and for the
+    /// same reason: two distinct source occurrences producing the same `MirrorStamp.key` is a
+    /// real, reachable state — Apple documents `calendarItemExternalIdentifier` as not guaranteed
+    /// unique per occurrence, and `MirrorStamp.key` truncates to the second — and an ordinary
+    /// `result[key] = content` overwrite would silently keep whichever one the loop happened to
+    /// visit last, with no trace the other ever existed. A collision is resolved the same way a
+    /// destination-side duplicate is: one deterministic survivor (the lowest content hash, an
+    /// arbitrary but stable tie-break — see `collapsingDuplicates`), recorded rather than
+    /// silently dropped.
     private func desiredContent(
         from source: [SourceEventInstance],
         configuration: SyncConfiguration
-    ) -> [String: MirrorContent] {
+    ) -> (byKey: [String: MirrorContent], collisions: [SyncPlan.SourceCollision], unstampableCount: Int) {
+        let grouping = groupedSourceContent(from: source, configuration: configuration)
         var result: [String: MirrorContent] = [:]
-        for instance in source
-        where instance.status != .cancelled && !configuration.excludedTitles.contains(instance.title) {
-            let content = MirrorContent(mirroring: instance, configuration: configuration)
-            result[content.stamp.key] = content
+        var collisions: [SyncPlan.SourceCollision] = []
+        for (key, group) in grouping.byKey {
+            result[key] = group.min { ContentHasher.hash($0) < ContentHasher.hash($1) }
+            if group.count > 1 {
+                collisions.append(.init(key: key, count: group.count))
+            }
         }
-        return result
+        return (result, collisions, grouping.unstampableCount)
     }
 
-    /// Only a *valid* stamp makes a destination event ours to reason about at all — an event
-    /// without one never enters this map, and everything downstream in `plan` only ever sees
-    /// what came out of here. That is the guard from row 38 expressed as a filter that runs
-    /// before `plan`'s own matching logic, rather than as a check it has to remember to make.
+    private func groupedSourceContent(
+        from source: [SourceEventInstance],
+        configuration: SyncConfiguration
+    ) -> (byKey: [String: [MirrorContent]], unstampableCount: Int) {
+        var result: [String: [MirrorContent]] = [:]
+        var unstampableCount = 0
+        for instance in source
+        where instance.status != .cancelled && !configuration.excludedTitles.contains(instance.title) {
+            guard let content = MirrorContent.mirroring(instance, configuration: configuration) else {
+                unstampableCount += 1
+                continue
+            }
+            result[content.stamp.key, default: []].append(content)
+        }
+        return (result, unstampableCount)
+    }
+
+    /// Only a *valid* stamp, written by *this configuration*, makes a destination event ours to
+    /// reason about at all — an unstamped event, or one stamped by a different
+    /// `SyncConfiguration.installationIdentifier`, never enters this map, and everything
+    /// downstream in `plan` only ever sees what came out of here. That is the guard from row 38
+    /// expressed as a filter that runs before `plan`'s own matching logic, extended to the same
+    /// property across installations: two independent installs sharing one destination calendar
+    /// can each only ever see, match, update or delete the events their own stamp identifies as
+    /// theirs — an event from another install is, to this one, indistinguishable from any other
+    /// hand-created event it must never touch.
     ///
     /// Grouped rather than collapsed to one entry per key: collapsing here, before duplicates can
     /// be detected, is exactly the bug this shape avoids — two destination events sharing a key
     /// would otherwise overwrite each other silently, with no trace that a second one ever
     /// existed for `collapsingDuplicates` to find and delete.
-    private func groupedStampedDestinationEvents(_ destination: [DestinationEvent]) -> [String: [DestinationEvent]] {
+    private func groupedStampedDestinationEvents(
+        _ destination: [DestinationEvent], configuration: SyncConfiguration
+    ) -> [String: [DestinationEvent]] {
         var result: [String: [DestinationEvent]] = [:]
         for event in destination {
-            guard let stamp = event.stamp else { continue }
+            guard let stamp = event.stamp, stamp.installationIdentifier == configuration.installationIdentifier else {
+                continue
+            }
             result[stamp.key, default: []].append(event)
         }
         return result
@@ -168,6 +217,7 @@ public struct SyncEngine: Sendable {
         result.updates.sort { $0.destinationIdentifier < $1.destinationIdentifier }
         result.deletions.sort { $0.destinationIdentifier < $1.destinationIdentifier }
         result.unchanged.sort { $0.stamp.key < $1.stamp.key }
+        result.sourceCollisions.sort { $0.key < $1.key }
         return result
     }
 }
