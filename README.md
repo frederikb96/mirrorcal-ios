@@ -49,6 +49,15 @@ The app target needs Xcode; CI builds it on a macOS runner.
 `Mac` publishes the screenshot and the device log as artifacts, because an automated check can
 pass while the screen renders nothing.
 
+## Push sidecar (optional)
+
+`push-sidecar/` and `charts/mirrorcal-push/` are an optional, self-hosted piece: a small Go
+service plus a Helm chart, both independent of the app and versioned/released separately, that
+sends scheduled silent pushes to wake the app in the background — the strongest lever iOS gives
+an app that isn't in the foreground. Anyone with a Kubernetes cluster and their own Apple
+developer account can install it against their own copy of the app; see each directory's own
+README for what it does and how to run it.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).

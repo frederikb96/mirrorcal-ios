@@ -1,0 +1,34 @@
+{{- if .Values.ingress.enabled }}
+{{- $host := required "ingress.host is required when ingress.enabled" .Values.ingress.host }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "mirrorcal-push.fullname" . }}
+  labels:
+    {{- include "mirrorcal-push.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $host }}
+      secretName: {{ required "ingress.tls.secretName is required when ingress.tls.enabled (cert-manager fills it in when ingress.tls.certManager.enabled)" .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ $host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "mirrorcal-push.fullname" . }}
+                port:
+                  name: http
+{{- end }}

@@ -27,5 +27,8 @@ AuthKey_*.p8
 # macOS
 .DS_Store
 
+# Go build output (push-sidecar/)
+/push-sidecar/push-sidecar
+
 # Its own private git repo
 .claude/
