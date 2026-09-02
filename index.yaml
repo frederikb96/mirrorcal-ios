@@ -1,0 +1,27 @@
+apiVersion: v1
+entries:
+  mirrorcal-push:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-09-02T21:50:03.840610497Z"
+    description: Sends scheduled silent APNs pushes to wake a MirrorCal install in
+      the background
+    digest: 715895e94ef7647b317406666eafd98ec2d918f7eca530a14f4db73d7d4212d7
+    home: https://github.com/frederikb96/mirrorcal-ios
+    keywords:
+    - apns
+    - push-notifications
+    - ios
+    - mirrorcal
+    kubeVersion: '>=1.25.0-0'
+    maintainers:
+    - name: Frederik Berg
+      url: https://frederikberg.com
+    name: mirrorcal-push
+    sources:
+    - https://github.com/frederikb96/mirrorcal-ios
+    type: application
+    urls:
+    - https://github.com/frederikb96/mirrorcal-ios/releases/download/mirrorcal-push-0.1.0/mirrorcal-push-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-09-02T21:50:03.84061919Z"
