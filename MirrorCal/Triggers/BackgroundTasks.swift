@@ -48,20 +48,37 @@ enum BackgroundTasks {
         try? BGTaskScheduler.shared.submit(request)
     }
 
+    /// `BGTask` is not `Sendable`, and both the unstructured `Task` below and `expirationHandler`
+    /// can genuinely run concurrently with each other — the exact shape Swift 6 flags as a data
+    /// race risk. `BackgroundTaskHandle` wraps it as `@unchecked Sendable`, with `CompletionGuard`
+    /// as the actual runtime proof: only one of the two ever gets past `markCompleted()`, so only
+    /// one of them ever touches `task` for real, whichever wins the race to finish first.
     private static func handle(
         _ task: BGTask, reason: String, trigger: SyncCoordinator.Trigger, resubmit: @escaping () -> Void
     ) {
         resubmit()
+        let handle = BackgroundTaskHandle(task)
         let completion = CompletionGuard()
-        let work = Task { @MainActor in
-            let outcome = await AppSyncEngine.shared?.run(reason: reason, trigger: trigger)
-            if completion.markCompleted() { task.setTaskCompleted(success: outcome != nil) }
+        let work = Task {
+            let outcome = await runSync(reason: reason, trigger: trigger)
+            if completion.markCompleted() { handle.task.setTaskCompleted(success: outcome != nil) }
         }
-        task.expirationHandler = {
+        handle.task.expirationHandler = {
             work.cancel()
-            if completion.markCompleted() { task.setTaskCompleted(success: false) }
+            if completion.markCompleted() { handle.task.setTaskCompleted(success: false) }
         }
     }
+
+    @MainActor
+    private static func runSync(reason: String, trigger: SyncCoordinator.Trigger) async -> SyncOutcome? {
+        await AppSyncEngine.shared?.run(reason: reason, trigger: trigger)
+    }
+}
+
+/// See `handle`'s own doc comment for why this needs to exist at all.
+private final class BackgroundTaskHandle: @unchecked Sendable {
+    let task: BGTask
+    init(_ task: BGTask) { self.task = task }
 }
 
 /// Guards `BGTask.setTaskCompleted` against being called twice — once when the sync finishes
