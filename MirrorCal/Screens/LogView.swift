@@ -7,7 +7,6 @@ import UIKit
 struct LogView: View {
     @State private var entries: [DebugLogBuffer.Entry] = []
     @State private var isSharePresented = false
-    @State private var refreshTimer = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
 
     var body: some View {
         NavigationStack {
@@ -41,8 +40,15 @@ struct LogView: View {
                     .accessibilityIdentifier("log.share")
                 }
             }
-            .task { refresh() }
-            .onReceive(refreshTimer) { _ in refresh() }
+            .task {
+                // A plain polling loop rather than a Combine timer: `.task` is cancelled
+                // automatically when the view disappears, which a stored `Timer.publish`
+                // subscription needs an explicit `import Combine` and its own teardown for.
+                while !Task.isCancelled {
+                    refresh()
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
             .sheet(isPresented: $isSharePresented) {
                 ShareSheet(items: [logText()])
             }

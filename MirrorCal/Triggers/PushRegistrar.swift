@@ -84,7 +84,10 @@ enum SidecarRegistrar {
     struct RegistrationFailed: Error, Sendable { let status: Int }
 
     static func register(deviceToken: String) async {
-        guard let engine = AppSyncEngine.shared else { return }
+        // `SidecarRegistrar` carries no actor isolation of its own, unlike every other call site
+        // that reaches `AppSyncEngine.shared` from inside a `@MainActor` method or closure — so
+        // this one property read genuinely crosses actors and needs its own `await`.
+        guard let engine = await AppSyncEngine.shared else { return }
         let settings = await engine.settings
         guard !settings.sidecarHost.isEmpty, let secret = SyncSecretStore.load(), !secret.isEmpty else {
             DebugLogBuffer.shared.append(
