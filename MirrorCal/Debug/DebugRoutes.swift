@@ -58,7 +58,7 @@
                         { await AppSyncEngine.shared?.run(reason: "debug bridge", trigger: .manual) })
                 else { return .message("timed out running sync", status: 504) }
                 guard let outcome else { return .message("sync failed — see /log", status: 500) }
-                return .encoding(SyncOutcomePayload(outcome))
+                return .encoding(SyncOutcomeRecord(outcome))
             }
 
             // A live diff against the destination calendar, computed but not applied — so drift
@@ -123,22 +123,6 @@
                 lastSyncAt: history.map { ISO8601DateFormatter().string(from: $0.at) },
                 lastSyncSucceeded: history?.succeeded
             )
-        }
-    }
-
-    struct SyncOutcomePayload: Codable, Sendable {
-        let created: Int
-        let updated: Int
-        let deleted: Int
-        let unchanged: Int
-        let duplicatesRemoved: Int
-
-        init(_ outcome: SyncOutcome) {
-            created = outcome.created
-            updated = outcome.updated
-            deleted = outcome.deleted
-            unchanged = outcome.unchanged
-            duplicatesRemoved = outcome.duplicatesRemoved
         }
     }
 
