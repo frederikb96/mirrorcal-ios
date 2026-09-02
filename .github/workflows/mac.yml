@@ -153,6 +153,14 @@ jobs:
 
           sleep 6
 
+          # Bypasses the calendar-picker sheet, which nothing here can tap — this is what lets
+          # the /sync call further down exercise a genuine sync through the fixture-backed
+          # EventKit-shaped adapters rather than only ever hitting the not-configured rejection
+          # path a fresh install starts in.
+          curl -sS --max-time 5 -X POST -H 'Content-Type: application/json' \
+            -d '{"source": "fixture-source", "destination": "fixture-destination", "enabled": "true"}' \
+            "http://127.0.0.1:8765/configure" -o artifacts/configure.json
+
           for screen in status configuration log; do
             curl -sS --max-time 5 -X POST -H 'Content-Type: application/json' \
               -d "{\"screen\": \"$screen\"}" "http://127.0.0.1:8765/navigate" -o /dev/null
@@ -170,9 +178,17 @@ jobs:
               || { echo "::error::screen-$screen.png is suspiciously small — the screen may be blank"; exit 1; }
           done
 
-          # Exercises the fixture-backed sync end to end, and dumps state for the artifact —
-          # cheap on the same run rather than a second one to answer "does /sync actually work".
-          curl -sS --max-time 30 -X POST "http://127.0.0.1:8765/sync" -o artifacts/sync-outcome.json || true
+          # Exercises the fixture-backed sync end to end, now that /configure above has given it
+          # somewhere to write — asserted rather than merely dumped, since a sync that silently
+          # failed here would read as "configured" everywhere else.
+          curl -sS --max-time 30 -X POST "http://127.0.0.1:8765/sync" -o artifacts/sync-outcome.json
+          python3 -c "
+          import json
+          outcome = json.load(open('artifacts/sync-outcome.json'))
+          assert 'created' in outcome, f'sync did not return an outcome: {outcome}'
+          assert outcome['created'] > 0, f'expected the fixture corpus to create events, got {outcome}'
+          print(f\"sync outcome: {outcome}\")
+          "
           curl -sS --max-time 5 "http://127.0.0.1:8765/state" -o artifacts/state.json || true
           curl -sS --max-time 5 "http://127.0.0.1:8765/calendars" -o artifacts/calendars.json || true
 

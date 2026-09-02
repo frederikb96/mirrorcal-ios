@@ -92,6 +92,34 @@
                 return .encoding(["screen": screen.rawValue])
             }
 
+            // Sets the configured calendars directly, bypassing the picker UI — what lets a CI
+            // run exercise a genuine, full sync cycle through the real EventKit-shaped adapter
+            // pair (fixture-backed in fixture mode) rather than only ever seeing the
+            // not-configured rejection path a fresh install starts in.
+            router.register("POST", "/configure") { request in
+                guard let body = try? JSONDecoder().decode([String: String].self, from: request.body)
+                else {
+                    return .message(
+                        "body must be {\"source\": \"<id>\", \"destination\": \"<id>\", \"enabled\": \"true\"}",
+                        status: 400)
+                }
+                guard
+                    let applied = DebugBridgeSync.awaitMainActor({
+                        guard let engine = AppSyncEngine.shared else { return false }
+                        var settings = engine.settings
+                        if let source = body["source"] { settings.sourceCalendarIdentifier = source }
+                        if let destination = body["destination"] {
+                            settings.destinationCalendarIdentifier = destination
+                        }
+                        if let enabled = body["enabled"] { settings.isEnabled = enabled == "true" }
+                        engine.updateSettings(settings)
+                        return true
+                    })
+                else { return .message("timed out applying configuration", status: 504) }
+                guard applied else { return .message("no running AppSyncEngine to configure", status: 500) }
+                return .encoding(["configured": true])
+            }
+
             return router
         }
     }
