@@ -3,8 +3,8 @@ import SwiftUI
 
 /// A sheet listing every calendar EventKit can see, used for both the source and destination
 /// pick. `onSelect` returns whether the pick was accepted — the destination side uses this to run
-/// `DestinationGuard` and refuse a calendar that already holds foreign events, per row 26's own
-/// requirement that this be refused before it is even configured.
+/// `DestinationGuard` and refuse a calendar that already holds foreign events, before it is even
+/// saved as the configured destination.
 struct CalendarPickerView: View {
     let title: String
     let calendars: [CalendarSummary]

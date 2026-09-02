@@ -2,7 +2,7 @@ import BackgroundTasks
 import Foundation
 import MirrorCalKit
 
-/// Registers and resubmits the two background tasks the EventKit report found real:
+/// Registers and resubmits the two background tasks iOS actually offers a mirror app:
 /// `BGAppRefreshTask` as a frequent, short-budget safety net, and `BGProcessingTask` as an
 /// overnight, charger-only full reconcile. Both identifiers must also appear in
 /// `BGTaskSchedulerPermittedIdentifiers` (`Config/Info.plist`) — a mismatch there fails at
@@ -17,11 +17,10 @@ enum BackgroundTasks {
     static let refreshIdentifier = "com.frederikberg.mirrorcal.refresh"
     static let processingIdentifier = "com.frederikberg.mirrorcal.reconcile"
 
-    /// Not chunked or resumable — see the app-target report for why building that into
-    /// `SyncEngine.apply` was judged out of scope here. The mitigation is doing the one large
-    /// first sync in the foreground when sync is first enabled (`AppSyncEngine.updateSettings`),
-    /// so what a `BGAppRefreshTask` actually has to fit in its ~30 seconds is an ordinary small
-    /// diff, not the initial burst.
+    /// Not chunked or resumable — a large first sync is instead run in the foreground, immediately
+    /// when sync is first enabled (`AppSyncEngine.updateSettings`), so what a `BGAppRefreshTask`
+    /// actually has to fit in its ~30 seconds afterward is an ordinary small diff, not the initial
+    /// burst.
     static func register() {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshIdentifier, using: nil) { task in
             handle(task, reason: "background refresh", trigger: .backgroundRefresh, resubmit: scheduleRefresh)

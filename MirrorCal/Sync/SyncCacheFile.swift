@@ -2,9 +2,8 @@ import Foundation
 import MirrorCalKit
 
 /// Atomic JSON persistence for `SyncCache` in Application Support — a plain file rather than
-/// SwiftData or Core Data, per the EventKit report's own reasoning: the destination calendar is
-/// the only thing that has to be durable, so losing this file costs one sync's worth of redundant
-/// hash recomputation and nothing else.
+/// SwiftData or Core Data: the destination calendar is the only thing that has to be durable, so
+/// losing this file costs one sync's worth of redundant hash recomputation and nothing else.
 public enum SyncCacheFile {
     private static let filename = "sync-cache.json"
 

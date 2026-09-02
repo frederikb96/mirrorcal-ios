@@ -3,8 +3,8 @@ import MirrorCalKit
 
 /// Lets Freddy build Shortcuts personal automations (07:30, 12:30, on "when I open Calendar",
 /// and so on) that run a sync without opening the app — `openAppWhenRun = false` is what makes
-/// that possible, per the EventKit report's own reasoning: these are described as flaky in
-/// practice, so they raise the floor rather than set it, alongside the other triggers.
+/// that possible. Personal automations are known to be unreliable in practice, so this raises
+/// the floor on how often a sync happens rather than being the trigger anything depends on.
 struct SyncCalendarIntent: AppIntent {
     static var title: LocalizedStringResource { "Sync MirrorCal" }
     static var description: IntentDescription {

@@ -4,10 +4,9 @@ import UserNotifications
 
 /// The Apple-only half of push: asks for permission, asks APNs for a device token, registers it
 /// with the sidecar host from `SyncSettings`, and — the reason any of this exists — runs a sync
-/// whenever a silent push wakes the app, with the trigger recorded as `.push` in the log. Per the
-/// push sidecar's own contract report, a push that wakes the app but runs an indistinguishable
-/// "just a sync" does not satisfy that requirement; `AppSyncEngine.run(reason: "silent push", ...)`
-/// is what makes it distinguishable.
+/// whenever a silent push wakes the app, with the trigger recorded as `.push` and the reason as
+/// "silent push" in the log — a push that wakes the app but runs an indistinguishable "just a
+/// sync" would leave no way to tell the push actually did its job.
 ///
 /// A `UIApplicationDelegate` because there is no other way to receive a device token or a remote
 /// notification — SwiftUI has no equivalent, and both callbacks are delivered to the app delegate
@@ -112,8 +111,8 @@ enum SidecarRegistrar {
             DebugLogBuffer.shared.append(.info, "push", "device token registered with sidecar")
         } catch {
             // A `401` here specifically means a wrong or unconfigured shared secret — surfaced
-            // through the same log a person actually reads, per the sidecar contract's own
-            // instruction that a silent failure here means the phone quietly stops getting pushed.
+            // through the same log a person actually reads, since a silent failure here means
+            // the phone quietly stops getting pushed with nothing telling anyone why.
             DebugLogBuffer.shared.append(.error, "push", "sidecar registration failed: \(error)")
         }
     }

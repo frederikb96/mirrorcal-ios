@@ -24,7 +24,7 @@ public struct SyncSettings: Codable, Sendable, Equatable {
     /// `FieldPolicy` itself is not `Codable` (`.replace(String)` needs no more than this, and the
     /// package deliberately carries no persistence-format opinion) — this is the app-target-only
     /// encoding, with a fixed replacement text rather than an arbitrary one, matching the one
-    /// combination the engine report actually asked for: "Busy only" as title `.replace("Busy")`.
+    /// combination that matters in practice: "Busy only" as title `.replace("Busy")`.
     public enum FieldPolicyRawValue: String, Codable, Sendable, CaseIterable {
         case copy, drop, busyOnly
 

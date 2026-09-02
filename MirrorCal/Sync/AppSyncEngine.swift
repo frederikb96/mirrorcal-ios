@@ -36,10 +36,9 @@ private final class AppSyncEngineBox: @unchecked Sendable {
 @MainActor
 @Observable
 public final class AppSyncEngine {
-    /// Sixteen-going-on-Android instinct says "just pass this everywhere instead" — kept anyway,
-    /// matching `PushRegistrar.store`'s own precedent, because `AppIntent.perform()` and the debug
-    /// bridge's route handlers are both instantiated fresh with no constructor argument to receive
-    /// one through.
+    /// A static back door rather than dependency injection everywhere, because `AppIntent.perform()`
+    /// and the debug bridge's route handlers are both instantiated fresh by the system with no
+    /// constructor argument to receive one through.
     public static weak var shared: AppSyncEngine?
 
     @ObservationIgnored private let store: EKEventStore
@@ -68,7 +67,8 @@ public final class AppSyncEngine {
     public private(set) var isSyncing = false
     /// Set right after a sync that actually committed something — `CalendarChangeObserver` reads
     /// this to suppress the `EKEventStoreChanged` notification the app's own write is expected to
-    /// provoke, which is the guard against row 13's Android loop (see that type's own doc comment).
+    /// provoke, which is the guard against the self-triggering loop that type's own doc comment
+    /// describes.
     public private(set) var lastCommitAt: Date?
 
     public init(
@@ -103,9 +103,9 @@ public final class AppSyncEngine {
 
     // MARK: - Running a sync
 
-    /// The one entry point every trigger calls. `reason` is the human-readable log line (row 32's
-    /// "each recording which one caused the run" lives here, at a finer grain than `trigger`
-    /// itself distinguishes); `trigger` is what `SyncCoordinator` coalesces on.
+    /// The one entry point every trigger calls. `reason` is the human-readable log line — every
+    /// trigger records a distinct one, at a finer grain than `trigger` itself distinguishes;
+    /// `trigger` is what `SyncCoordinator` coalesces on.
     @discardableResult
     public func run(reason: String, trigger: SyncCoordinator.Trigger) async -> SyncOutcome? {
         isSyncing = true
@@ -149,8 +149,7 @@ public final class AppSyncEngine {
 
     /// A dry run for the debug bridge's `/drift` route: what `plan()` would decide right now,
     /// without applying it — a live diff against the destination calendar rather than anything
-    /// remembered, which is exactly the route the engine report recommended the Android app never
-    /// had.
+    /// remembered, which is the kind of visibility the app this ports from never had.
     public func computeDrift() -> SyncPlan? {
         guard let (source, destination, supportedAvailabilities) = try? resolveStores() else { return nil }
         let window = settings.window()
@@ -186,10 +185,10 @@ public final class AppSyncEngine {
 
     // MARK: - Settings
 
-    /// Transitioning `isEnabled` from off to on runs one sync immediately, in the foreground —
-    /// the EventKit report's own mitigation for a first sync too large to fit a `BGAppRefreshTask`
-    /// budget: do the big burst while the app is on screen and unconstrained, so ordinary
-    /// background runs afterward are small diffs.
+    /// Transitioning `isEnabled` from off to on runs one sync immediately, in the foreground — a
+    /// first sync on a busy calendar is too large to fit a `BGAppRefreshTask`'s ~30-second budget,
+    /// so the big burst runs while the app is on screen and unconstrained, and ordinary background
+    /// runs afterward are small diffs.
     public func updateSettings(_ newValue: SyncSettings) {
         let wasEnabled = settings.isEnabled
         settings = newValue

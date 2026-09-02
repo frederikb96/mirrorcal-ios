@@ -5,8 +5,9 @@ import MirrorCalKit
 /// `DestinationCalendarStore` bound to one CalDAV (or any EventKit) calendar. Symmetrically with
 /// `EventKitSourceCalendar`, this is the file where the destination side of the safety boundary
 /// actually lives: every write goes through `stage`/`commit`, never immediately, so a whole plan
-/// reaches the calendar as one round trip — the EventKit report's estimate is a few thousand
-/// writes on the first sync for a busy calendar.
+/// reaches the calendar as one round trip — the first sync on a busy calendar can easily be a few
+/// thousand writes, and each one as its own commit would be far slower and far more likely to hit
+/// a rate limit on the CalDAV server.
 ///
 /// `final class` rather than a struct: `commit()` mutates a pending-action buffer that has to
 /// survive across the `stage` calls that built it, which a value type would silently copy.

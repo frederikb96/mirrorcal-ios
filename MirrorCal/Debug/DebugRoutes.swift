@@ -22,8 +22,8 @@
             }
 
             // What the app currently thinks: access status, whether it's configured/enabled, and
-            // the last sync's outcome — the device-probe route the EventKit report recommended
-            // building before anything else, expanded to cover the whole app's state.
+            // the last sync's outcome — a device probe worth having before anything else, so a
+            // stuck app can be diagnosed from the calendars and permissions it actually sees.
             router.register("GET", "/state") { _ in
                 guard let snapshot = DebugBridgeSync.awaitMainActor({ AppStateSnapshot.current() }) else {
                     return .message("timed out reading app state", status: 504)
@@ -48,9 +48,9 @@
                 return .encoding(entries.map(LogEntryPayload.init))
             }
 
-            // Triggers a real sync and waits for its outcome — the route the brief asks for by
-            // name. A longer timeout than the other routes: a first sync on a busy calendar is
-            // meant to take a while.
+            // Triggers a real sync and waits for its outcome, so a CI run or a curl call gets the
+            // answer in one round trip. A longer timeout than the other routes: a first sync on a
+            // busy calendar is meant to take a while.
             router.register("POST", "/sync") { _ in
                 guard
                     let outcome = DebugBridgeSync.awaitMainActor(
@@ -61,9 +61,8 @@
                 return .encoding(SyncOutcomePayload(outcome))
             }
 
-            // A live diff against the destination calendar, computed but not applied — the route
-            // the engine report recommended so drift can be *seen* rather than only inferred from
-            // logs after the fact.
+            // A live diff against the destination calendar, computed but not applied — so drift
+            // can be *seen* directly rather than only inferred from a log line after the fact.
             router.register("GET", "/drift") { _ in
                 guard let plan = DebugBridgeSync.awaitMainActor({ AppSyncEngine.shared?.computeDrift() })
                 else { return .message("timed out computing drift", status: 504) }

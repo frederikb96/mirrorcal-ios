@@ -28,7 +28,8 @@ public struct CalendarSummary: Identifiable, Sendable, Equatable, Codable {
 
 /// Lists what EventKit can currently see, and turns a calendar's own capability flags into the
 /// `SyncConfiguration` inputs the engine needs — read at the moment they are needed rather than
-/// assumed, per the EventKit report's own instruction not to guess `supportedEventAvailabilities`.
+/// assumed, since a calendar's `supportedEventAvailabilities` is a fact about that specific
+/// calendar, not something safe to guess once and reuse.
 public enum EventKitCalendarCatalog {
 
     public static func calendars(store: EKEventStore) -> [CalendarSummary] {

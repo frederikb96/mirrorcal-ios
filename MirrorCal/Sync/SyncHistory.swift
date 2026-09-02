@@ -10,7 +10,7 @@ public struct SyncHistoryEntry: Codable, Sendable, Equatable {
     /// The finer-grained trigger description — "foreground activation", "calendar changed
     /// (foreground)", "silent push", and so on. `SyncCoordinator.Trigger` stays coarse (it only
     /// needs to distinguish what it coalesces on); this is what actually answers "why did this
-    /// run happen", which is the row 32 verification criterion in the words a person reads.
+    /// run happen", in the words a person reads.
     public let reason: String
     public let outcome: SyncOutcome?
     public let errorDescription: String?

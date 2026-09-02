@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// Three screens rather than one combined view, deliberately: the brief calls for a status area,
-/// a configuration screen, and a log view as distinct concerns, and three separate tabs is also
-/// what makes the `Mac` workflow's screenshot step able to assert "this is the log screen, not a
-/// blank one" per screen rather than guessing at one long scroll.
+/// Three screens rather than one combined view, deliberately: status, configuration, and the log
+/// are distinct concerns, and three separate tabs is also what makes the `Mac` workflow's
+/// screenshot step able to assert "this is the log screen, not a blank one" per screen rather
+/// than guessing at one long scroll.
 struct RootView: View {
     @Environment(AppSyncEngine.self) private var engine
 

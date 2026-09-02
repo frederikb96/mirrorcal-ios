@@ -2,20 +2,19 @@ import EventKit
 import Foundation
 import MirrorCalKit
 
-/// Watches `.EKEventStoreChanged` while the app is foregrounded and triggers a sync — the
-/// "calendar-changed notification while foregrounded" trigger row 32 names distinctly from a
-/// plain app-becomes-active launch. Both map to `SyncCoordinator.Trigger.foreground` (there is no
-/// separate case for this, and `MirrorCalKit` is left alone rather than widened for one caller);
-/// what actually distinguishes them is the `reason` string this passes to `AppSyncEngine.run`,
-/// which is what the Status and Log screens display.
+/// Watches `.EKEventStoreChanged` while the app is foregrounded and triggers a sync — distinct
+/// from a plain app-becomes-active launch, though both map to `SyncCoordinator.Trigger.foreground`
+/// (there is no separate case for this, and `MirrorCalKit` is left alone rather than widened for
+/// one caller); what actually distinguishes them is the `reason` string this passes to
+/// `AppSyncEngine.run`, which is what the Status and Log screens display.
 ///
-/// Debounced and self-write-guarded — the defence against the exact loop row 13 names: on
-/// Android, the destination's own write fired the change observer, which fired another sync,
-/// roughly every four seconds indefinitely. This app's engine naturally settles after one extra
-/// round (a second `plan()` call sees only `unchanged` content and stages nothing), but nothing
-/// here should depend on that alone — `lastCommitAt` suppresses a notification that arrives
-/// inside this app's own recent write window, and `minimumInterval` caps how often this observer
-/// can start a sync on its own regardless.
+/// Debounced and self-write-guarded — the defence against writing to the destination firing this
+/// same observer, which fires another sync, which writes again: a loop that produced a sync
+/// roughly every few seconds indefinitely in the app this ports from. This app's engine naturally
+/// settles after one extra round (a second `plan()` call sees only `unchanged` content and stages
+/// nothing), but nothing here should depend on that alone — `lastCommitAt` suppresses a
+/// notification that arrives inside this app's own recent write window, and `minimumInterval`
+/// caps how often this observer can start a sync on its own regardless.
 @MainActor
 final class CalendarChangeObserver {
     /// `NSObjectProtocol` is not `Sendable`. `start()`/`stop()` are driven by `scenePhase`

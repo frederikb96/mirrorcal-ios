@@ -8,10 +8,11 @@ import MirrorCalKit
 /// package: it is a storage detail of *this* destination, not something the engine's own stamp
 /// type should have to know about.
 ///
-/// ⚠️ Unverified without a device: the EventKit report flags that `url` surviving the CalDAV round
-/// trip to Nextcloud and back is a real open question, with a `notes` trailer as the documented
-/// fallback if it does not. This app does not yet implement that fallback — see the app-target
-/// report for why, and what breaks if the answer turns out to be no.
+/// ⚠️ Unverified without a device: whether `url` survives the CalDAV round trip to Nextcloud and
+/// back is a real open question, with a `notes` trailer as a possible fallback if it does not.
+/// This app does not yet implement that fallback. If `url` turns out not to survive, every
+/// mirrored event loses its stamp on the next read and gets recreated rather than matched —
+/// visible as every event duplicating on the sync after the first.
 public enum EventKitStamp {
 
     private static let urlSafeCharacters = CharacterSet(

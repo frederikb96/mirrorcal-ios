@@ -40,8 +40,10 @@ public struct EventKitSourceCalendar: SourceCalendarReading, @unchecked Sendable
     }
 
     /// Expansion, not the recurrence rule — `enumerateEvents` already hands back one `EKEvent`
-    /// per occurrence with detachment and cancellation already resolved, which is the entire
-    /// reason the EventKit report recommends never touching `EKRecurrenceRule` directly.
+    /// per occurrence with detachment and cancellation already resolved, which is why nothing
+    /// here ever reads or replicates an `EKRecurrenceRule` directly: doing that would mean
+    /// reimplementing `EXDATE`s, detached overrides, and `EKSpan` semantics by hand, each its own
+    /// class of bug.
     ///
     /// `nil` when an event carries neither identifier at all — both are optional in EventKit, and
     /// a fallback identifier generated fresh on every scan would be a new mirror identity each
