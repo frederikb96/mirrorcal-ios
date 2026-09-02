@@ -73,7 +73,8 @@ public struct SyncSettings: Codable, Sendable, Equatable {
             descriptionPolicy: descriptionPolicyRawValue.policy(),
             locationPolicy: locationPolicyRawValue.policy(),
             excludedTitles: excludedTitles,
-            supportedDestinationAvailabilities: supportedDestinationAvailabilities
+            supportedDestinationAvailabilities: supportedDestinationAvailabilities,
+            installationIdentifier: InstallationIdentity.current()
         )
     }
 

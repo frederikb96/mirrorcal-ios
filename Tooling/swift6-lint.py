@@ -244,6 +244,164 @@ OBSERVER_TOKEN_PROPERTY = re.compile(r"\bvar\s+([A-Za-z_]\w*)\s*:\s*NSObjectProt
 DEINIT_OPEN = re.compile(r"^\s*deinit\s*\{")
 
 
+#: Reference types from frameworks this app actually links that do not declare `Sendable` — not
+#: an attempt at a complete list, only the ones a parameter or a capture has actually been in the
+#: two Mac runs this check exists to save. Extend it the same way as everything else here: the
+#: next Mac run that fails on this shape names the type to add.
+NON_SENDABLE_APPLE_TYPE = (
+    r"EKEvent|EKEventStore|EKCalendar|EKParticipant|EKRecurrenceRule|EKAlarm"
+    r"|BGTask|BGAppRefreshTask|BGProcessingTask|NWConnection|NWListener|CLLocation"
+)
+NON_SENDABLE_PARAM = re.compile(rf"\b(\w+)\s*:\s*(?:{NON_SENDABLE_APPLE_TYPE})\??(?:\s*[,)])")
+FUNC_OPEN = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public |internal |private |fileprivate |static )*func\s+\w+")
+TASK_OPEN = re.compile(r"\bTask(?:\.detached)?\s*(?:\([^)]*\))?\s*\{")
+
+
+def sending_capture_in_task(lines: list[str]) -> list[tuple[int, str, str]]:
+    """A known non-`Sendable` Apple type, taken as a function parameter, read inside a `Task {}`
+    (or `Task.detached {}`) in that same function's body.
+
+    The parameter crosses into the task's own isolation domain, which is exactly what Swift 6
+    rejects with "sending '<value>' risks causing data races" — a diagnostic at the point of
+    *use* inside the closure, several lines from the parameter that actually causes it, which is
+    what makes it easy to write and easy to miss reading back. Neither `parse-swift.sh` nor the
+    package build sees this: it needs full type checking, and the framework types it fires on
+    live only in the app target.
+
+    Scoped by indentation like the rest of this module. A parameter list spanning several lines
+    is read up to the function's opening brace; the closure body is read from `Task {` to the
+    line indentation returns to the closure's own opening indent.
+    """
+    findings: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        if not FUNC_OPEN.match(line):
+            continue
+        opening = index
+        while opening < len(lines) and opening - index <= 15 and "{" not in lines[opening]:
+            opening += 1
+        if opening >= len(lines) or "{" not in lines[opening]:
+            continue
+        signature = "\n".join(lines[index : opening + 1])
+        risky_params = {m.group(1) for m in NON_SENDABLE_PARAM.finditer(signature)}
+        if not risky_params:
+            continue
+
+        indent = len(lines[index]) - len(lines[index].lstrip())
+        for cursor in range(opening + 1, len(lines)):
+            body = lines[cursor]
+            if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                break
+            if not TASK_OPEN.search(body):
+                continue
+            task_indent = len(body) - len(body.lstrip())
+            for inner in range(cursor + 1, len(lines)):
+                inner_body = lines[inner]
+                if inner_body.strip() and (len(inner_body) - len(inner_body.lstrip())) <= task_indent:
+                    break
+                for name in risky_params:
+                    if re.search(rf"(?<![.\w]){re.escape(name)}\b", inner_body):
+                        findings.append((
+                            inner + 1, inner_body.strip(),
+                            f"'{name}' is a non-Sendable Apple type taken as a parameter, read "
+                            "inside this Task — Swift 6 will reject it as \"sending risks causing "
+                            "data races\"; extract only the Sendable fields you need before the "
+                            "Task, or make the whole call nonisolated and await it directly",
+                        ))
+    return findings
+
+
+#: A type's own declaration line, capturing what kind it is, its name, and (if present on this
+#: line) its inheritance clause — reused both to index every locally-declared type and to find
+#: which of them opt into `Codable`.
+TYPE_DECL_NAMED = re.compile(
+    r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public |internal |private |fileprivate |final |open )*"
+    r"(?:struct|class|enum)\s+(\w+)(?:<[^>]*>)?\s*(?::\s*([^{]+))?\{"
+)
+EXTENSION_CONFORMANCE = re.compile(r"^\s*extension\s+(\w+)\s*:\s*([^{]+)\{")
+CODABLE_CONFORMANCE = re.compile(r"\b(?:Codable|Encodable|Decodable)\b")
+#: A stored property's declaration line: name, then its explicit type up to `=` or end of line.
+#: Deliberately excludes a line containing `{` — a computed property's accessor block, whether
+#: opened on this line or (checked separately) the next, is not a stored property and is not
+#: subject to `Codable` synthesis at all.
+STORED_PROPERTY = re.compile(
+    r"^\s*(?:public |internal |private |fileprivate )?(?:let|var)\s+(\w+)\s*:\s*([^{\n=]+?)\s*(?:=.*)?$"
+)
+
+
+def build_codable_type_index(all_lines: dict[Path, list[str]]) -> tuple[set[str], set[str]]:
+    """Every locally-declared type name, and the subset of those that conform to `Codable` (or
+    `Encodable`/`Decodable`) somewhere — on the declaration itself or in a same-conformance
+    extension anywhere in the scanned tree.
+    """
+    declared: set[str] = set()
+    codable: set[str] = set()
+    for lines in all_lines.values():
+        for line in lines:
+            if match := TYPE_DECL_NAMED.match(line):
+                name, inheritance = match.group(1), match.group(2)
+                declared.add(name)
+                if inheritance and CODABLE_CONFORMANCE.search(inheritance):
+                    codable.add(name)
+            elif match := EXTENSION_CONFORMANCE.match(line):
+                name, inheritance = match.group(1), match.group(2)
+                if CODABLE_CONFORMANCE.search(inheritance):
+                    codable.add(name)
+    return declared, codable
+
+
+def codable_type_embeds_non_codable_property(
+    lines: list[str], non_codable_types: set[str]
+) -> list[tuple[int, str, str]]:
+    """A type that conforms to `Codable` (or `Encodable`/`Decodable`) with a stored property whose
+    type is another type declared in this tree that does *not* conform.
+
+    Synthesized `Codable` needs every stored property to conform too, and the compiler reports it
+    as two separate `Decodable`/`Encodable` conformance errors on the *outer* type — which reads
+    as two problems on a type whose own declaration looks correct, rather than one problem on the
+    property that actually causes it. This is exactly the shape a package type deliberately
+    carrying no persistence-format opinion (so it stays free of a `Codable` conformance) takes
+    once something forgets that and stores it directly in a DTO instead of going through the
+    conversion type that exists for this reason.
+
+    Only checks locally-declared types (the index this is called with), so a framework type like
+    `Date` or `String` is never flagged — this only ever fires on a real, findable non-conformance
+    inside the same tree being scanned.
+    """
+    findings: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        match = TYPE_DECL_NAMED.match(line)
+        if not match or not match.group(2) or not CODABLE_CONFORMANCE.search(match.group(2)):
+            continue
+        indent = len(line) - len(line.lstrip())
+        for cursor in range(index + 1, len(lines)):
+            body = lines[cursor]
+            if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                break
+            prop = STORED_PROPERTY.match(body)
+            if not prop:
+                continue
+            # A computed property whose accessor block opens on the following line reads
+            # identically to a stored one up to here — the next non-blank line starting with
+            # '{' is what actually distinguishes them, and Codable synthesis ignores computed
+            # properties entirely, so flagging one would be a pure false positive.
+            lookahead = cursor + 1
+            while lookahead < len(lines) and not lines[lookahead].strip():
+                lookahead += 1
+            if lookahead < len(lines) and lines[lookahead].strip().startswith("{"):
+                continue
+            prop_name, prop_type = prop.group(1), prop.group(2)
+            for type_name in re.findall(r"\b([A-Z]\w*)\b", prop_type):
+                if type_name in non_codable_types:
+                    findings.append((
+                        cursor + 1, body.strip(),
+                        f"'{prop_name}' is '{type_name}', which does not conform to Codable — "
+                        f"'{match.group(1)}' will fail to synthesize Decodable/Encodable, "
+                        "reported as two separate conformance errors on the outer type",
+                    ))
+                    break
+    return findings
+
+
 def unmarked_observer_token_read_in_deinit(
     lines: list[str], isolated: set[int]
 ) -> list[tuple[int, str, str]]:
@@ -292,13 +450,14 @@ def unmarked_observer_token_read_in_deinit(
     return findings
 
 
-def check(path: Path) -> list[tuple[int, str, str]]:
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+def check(path: Path, lines: list[str], non_codable_types: set[str]) -> list[tuple[int, str, str]]:
     isolated = main_actor_line_numbers(lines)
     findings: list[tuple[int, str, str]] = detached_reads_of_isolated_statics(lines, isolated)
     findings.extend(nonisolated_uikit_access(lines))
     findings.extend(switch_after_guard_missing_return(lines))
     findings.extend(unmarked_observer_token_read_in_deinit(lines, isolated))
+    findings.extend(sending_capture_in_task(lines))
+    findings.extend(codable_type_embeds_non_codable_property(lines, non_codable_types))
 
     for index, line in enumerate(lines):
         if STORED_STATIC_VAR.match(line) and index not in isolated and "nonisolated(unsafe)" not in line:
@@ -328,9 +487,13 @@ def main() -> int:
         print(f"no Swift files under {', '.join(str(t) for t in targets)}", file=sys.stderr)
         return 1
 
+    all_lines = {path: path.read_text(encoding="utf-8", errors="replace").splitlines() for path in files}
+    declared_types, codable_types = build_codable_type_index(all_lines)
+    non_codable_types = declared_types - codable_types
+
     total = 0
     for path in files:
-        for line_number, source, message in check(path):
+        for line_number, source, message in check(path, all_lines[path], non_codable_types):
             total += 1
             print(f"::error file={path},line={line_number}::{message}")
             print(f"  {path}:{line_number}: {source}")

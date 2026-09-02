@@ -30,7 +30,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Always runs, on every trigger, path filter or not — a job gated by `paths:` on the trigger
+  # itself simply never starts when nothing matched, which is fine for an optional check but
+  # leaves a *required* one stuck pending forever. `checks-ok` below is what stays reportable
+  # either way; this job only decides whether `checks` itself has anything to do.
+  detect:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            swift:
+              - 'MirrorCal/**'
+              - 'MirrorCalKit/**'
+              - 'MirrorCal.xcodeproj/**'
+              - 'Config/**'
+              - 'Tooling/**'
+              - '.swift-format'
+              - '.github/workflows/free-checks.yml'
+
   checks:
+    needs: detect
+    if: ${{ needs.detect.outputs.swift == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -104,3 +131,19 @@ jobs:
           name: format-patch
           path: format.patch
           retention-days: 5
+
+  # What a branch-protection rule should name as required, if one is ever added: this runs
+  # whether `checks` ran, was skipped by the path filter, or failed, and reports accordingly.
+  # `!cancelled()` rather than `always()` — `always()` would also run (and report) after this
+  # workflow was itself cancelled by the `concurrency` group above superseding it, which is not
+  # a real failure and should not be reported as one.
+  checks-ok:
+    name: Free checks ok
+    needs: [detect, checks]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if checks did not succeed or was skipped
+        run: |
+          result="${{ needs.checks.result }}"
+          [ "$result" = "success" ] || [ "$result" = "skipped" ] || { echo "checks: $result"; exit 1; }

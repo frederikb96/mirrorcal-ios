@@ -11,6 +11,10 @@ public struct SyncOutcomeRecord: Codable, Sendable, Equatable {
     public let deleted: Int
     public let unchanged: Int
     public let duplicatesRemoved: Int
+    /// Zero in ordinary operation — see `SyncOutcome.sourceCollisions`/`unstampableSourceEvents`
+    /// for what a nonzero value here means.
+    public let sourceCollisions: Int
+    public let unstampableSourceEvents: Int
 
     public init(_ outcome: SyncOutcome) {
         created = outcome.created
@@ -18,6 +22,8 @@ public struct SyncOutcomeRecord: Codable, Sendable, Equatable {
         deleted = outcome.deleted
         unchanged = outcome.unchanged
         duplicatesRemoved = outcome.duplicatesRemoved
+        sourceCollisions = outcome.sourceCollisions
+        unstampableSourceEvents = outcome.unstampableSourceEvents
     }
 }
 

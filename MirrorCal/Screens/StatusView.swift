@@ -69,6 +69,12 @@ struct StatusView: View {
                 if outcome.duplicatesRemoved > 0 {
                     LabeledContent("Duplicates removed", value: "\(outcome.duplicatesRemoved)")
                 }
+                if outcome.sourceCollisions > 0 {
+                    LabeledContent("Source collisions", value: "\(outcome.sourceCollisions)")
+                }
+                if outcome.unstampableSourceEvents > 0 {
+                    LabeledContent("Unstampable events", value: "\(outcome.unstampableSourceEvents)")
+                }
             } else if let error = history.errorDescription {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.red)
@@ -80,9 +86,15 @@ struct StatusView: View {
     }
 
     private func relativeDescription(_ date: Date) -> String {
+        let now = Date()
+        // `date` is `history.at`, captured earlier in the same run this reads it from — a few
+        // milliseconds after `now` here is ordinary clock drift, not a sync that happened in the
+        // future. Taken literally, `RelativeDateTimeFormatter` reads that gap as "in 0 seconds",
+        // which is the single number on this screen that answers "is this thing working".
+        guard now.timeIntervalSince(date) >= 1 else { return "just now" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return formatter.localizedString(for: date, relativeTo: now)
     }
 }
 

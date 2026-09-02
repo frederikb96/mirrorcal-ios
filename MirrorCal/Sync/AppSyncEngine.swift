@@ -114,11 +114,7 @@ public final class AppSyncEngine {
             let outcome = try await coordinator.requestSync(trigger: trigger)
             historyStore.recordSuccess(reason: reason, outcome: outcome)
             lastHistory = historyStore.loadLast()
-            DebugLogBuffer.shared.append(
-                .info, "sync",
-                "\(reason): created \(outcome.created), updated \(outcome.updated), "
-                    + "deleted \(outcome.deleted), unchanged \(outcome.unchanged), "
-                    + "duplicates removed \(outcome.duplicatesRemoved)")
+            DebugLogBuffer.shared.append(.info, "sync", "\(reason): \(Self.logSummary(outcome))")
             return outcome
         } catch {
             historyStore.recordFailure(reason: reason, error: String(describing: error))
@@ -243,6 +239,23 @@ public final class AppSyncEngine {
     }
 
     // MARK: - Logging
+
+    /// The counts a normal sync always has, plus the two that only appear when the source data
+    /// itself was ambiguous — appended only when nonzero, so an ordinary sync's log line reads
+    /// exactly as it always has.
+    nonisolated private static func logSummary(_ outcome: SyncOutcome) -> String {
+        var summary =
+            "created \(outcome.created), updated \(outcome.updated), "
+            + "deleted \(outcome.deleted), unchanged \(outcome.unchanged), "
+            + "duplicates removed \(outcome.duplicatesRemoved)"
+        if outcome.sourceCollisions > 0 {
+            summary += ", source collisions \(outcome.sourceCollisions)"
+        }
+        if outcome.unstampableSourceEvents > 0 {
+            summary += ", unstampable events \(outcome.unstampableSourceEvents)"
+        }
+        return summary
+    }
 
     nonisolated private static func logCoordinatorEvent(_ event: SyncCoordinator.Event) {
         switch event {

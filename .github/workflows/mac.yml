@@ -27,7 +27,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Always runs, on every trigger, path filter or not — a job gated by `paths:` on the trigger
+  # itself simply never starts when nothing matched, which is fine for an optional check but
+  # leaves a *required* one stuck pending forever. `mac-ok` below is what stays reportable
+  # either way; this job only decides whether `build` itself has anything to do. `dispatch`
+  # ignores path filters regardless, so a manually requested run is never skipped by this.
+  detect:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            swift:
+              - 'MirrorCal/**'
+              - 'MirrorCalKit/**'
+              - 'MirrorCal.xcodeproj/**'
+              - 'Config/**'
+              - '.github/workflows/mac.yml'
+
   build:
+    needs: detect
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.detect.outputs.swift == 'true' }}
     runs-on: macos-26
     timeout-minutes: 30
 
@@ -215,12 +241,17 @@ jobs:
           echo "screenshot is $bytes bytes"
           [ "$bytes" -gt 20000 ] || { echo 'suspiciously small — the screen may be blank'; exit 1; }
 
+      # Filtered on the app's own logging subsystem, not on process — `processImagePath CONTAINS
+      # "MirrorCal"` also captures every system framework logging on the app's behalf, and the
+      # debug bridge's own loopback listener makes most of that Network.framework connection
+      # chatter. This is the only place a fault on a real device (no debugger, no Log screen if
+      # the app never gets that far) is visible at all, so it needs to carry the app's own events.
       - name: Application logs
         if: always() && inputs.run_app != false
         run: |
           mkdir -p artifacts
           xcrun simctl spawn "${{ steps.sim.outputs.udid }}" log show --last 3m --style compact \
-            --predicate 'processImagePath CONTAINS "MirrorCal"' > artifacts/app.log 2>&1 || true
+            --predicate 'subsystem == "com.frederikberg.mirrorcal"' > artifacts/app.log 2>&1 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -228,3 +259,19 @@ jobs:
           name: mac-artifacts
           path: artifacts/
           retention-days: 14
+
+  # What a branch-protection rule should name as required, if one is ever added: this runs
+  # whether `build` ran, was skipped by the path filter, or failed, and reports accordingly.
+  # `!cancelled()` rather than `always()` — `always()` would also run (and report) after this
+  # workflow was itself cancelled by the `concurrency` group above superseding it, which is not
+  # a real failure and should not be reported as one.
+  mac-ok:
+    name: Mac ok
+    needs: [detect, build]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if build did not succeed or was skipped
+        run: |
+          result="${{ needs.build.result }}"
+          [ "$result" = "success" ] || [ "$result" = "skipped" ] || { echo "build: $result"; exit 1; }
