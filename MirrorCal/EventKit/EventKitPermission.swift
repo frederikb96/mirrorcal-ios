@@ -31,6 +31,12 @@ public enum EventKitPermission {
     /// Shows the system prompt if `.notDetermined`, and does nothing otherwise — the prompt is
     /// one-shot per install, so calling this again once answered is always safe and never surprises
     /// anyone with a second dialog.
+    ///
+    /// `@MainActor`: `EKEventStore` is not `Sendable`, so handing one to a plain nonisolated
+    /// async function is a genuine data-race risk under Swift 6's region checking — every caller
+    /// here is already `@MainActor` (`AppSyncEngine`), so pinning this to the same actor removes
+    /// the crossing rather than working around it.
+    @MainActor
     @discardableResult
     public static func requestFullAccess(using store: EKEventStore) async -> CalendarAccessStatus {
         let before = currentStatus()
