@@ -59,6 +59,38 @@ jobs:
         run: |
           grep -E "error:" /tmp/build.log | head -40 || echo "no compiler errors in the log"
 
+      # Whether the array-valued keys in `Config/Info.plist` actually reached the built bundle —
+      # invisible in a screenshot, invisible to a compile, and fails at the moment a background
+      # task or a silent push is due, which reads as iOS refusing to cooperate rather than as a
+      # missing declaration. Checks a key from `Config/Info.plist` AND one that only
+      # `GENERATE_INFOPLIST_FILE` produces, because the risk runs both ways: pointing
+      # `INFOPLIST_FILE` at a real plist can stop the generated keys merging in.
+      - name: The built bundle declares what it needs
+        run: |
+          set -o pipefail
+          app=$(find build/dd/Build/Products -name '*.app' -maxdepth 3 | head -1)
+          [ -n "$app" ] || { echo 'build produced no .app'; exit 1; }
+          plutil -p "$app/Info.plist" > /tmp/built-info.txt
+          grep -q '"fetch"' /tmp/built-info.txt \
+            || { echo '::error::UIBackgroundModes is missing "fetch" — BGAppRefreshTask never runs'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          grep -q '"processing"' /tmp/built-info.txt \
+            || { echo '::error::UIBackgroundModes is missing "processing" — BGProcessingTask never runs'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          grep -q '"remote-notification"' /tmp/built-info.txt \
+            || { echo '::error::UIBackgroundModes is missing "remote-notification" — a silent push never wakes the app'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          grep -q 'com.frederikberg.mirrorcal.refresh' /tmp/built-info.txt \
+            || { echo '::error::BGTaskSchedulerPermittedIdentifiers is missing the refresh task id'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          grep -q 'com.frederikberg.mirrorcal.reconcile' /tmp/built-info.txt \
+            || { echo '::error::BGTaskSchedulerPermittedIdentifiers is missing the reconcile task id'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          grep -q 'NSCalendarsFullAccessUsageDescription' /tmp/built-info.txt \
+            || { echo '::error::the generated Info.plist keys were not merged in — INFOPLIST_FILE may have replaced them'; \
+                 cat /tmp/built-info.txt; exit 1; }
+          echo 'background modes, background task identifiers, and generated keys all present'
+
       - name: Boot a simulator
         id: sim
         if: inputs.run_app != false
@@ -90,12 +122,17 @@ jobs:
           [ -n "$app" ] || { echo 'build produced no .app'; exit 1; }
           xcrun simctl install "$udid" "$app"
 
-      # The debug bridge only exists in Debug builds — the router and its routes are all
-      # `#if DEBUG`. Launches the app, polls `/health` until the bridge answers, settles past the
-      # first frame, then screenshots. The retake and the size floor both guard against the same
-      # race: `/health` answers the moment the process is alive, well before the first frame is
-      # drawn, so "the bridge responded" proves nothing about what is on screen.
-      - name: Screenshot the app
+      # The debug bridge and fixture mode only exist in Debug builds — the router, its routes,
+      # and `FixtureCalendarStore` are all `#if DEBUG`. `--mirrorcal-fixtures` seeds the app with
+      # `EventFixtures.all` through a fake calendar store, so every screen has realistic,
+      # populated data even though this simulator holds no calendar accounts at all.
+      #
+      # Each screen is driven through `/navigate` rather than `idb` or a human — this runner has
+      # neither. `/screen` is asked again and asserted before each screenshot: `/navigate`
+      # answering only proves the router accepted the request, not that the screen has actually
+      # drawn, and a size floor alone cannot tell a wrong screen from the right one — both are
+      # real, well-rendered screens that pass every byte-count check.
+      - name: Screenshot each screen in fixture mode
         if: inputs.run_app != false && (inputs.configuration || 'Debug') == 'Debug'
         run: |
           set -o pipefail
@@ -103,7 +140,7 @@ jobs:
           udid="${{ steps.sim.outputs.udid }}"
           bundle=com.frederikberg.mirrorcal
 
-          xcrun simctl launch "$udid" "$bundle" > /dev/null
+          xcrun simctl launch "$udid" "$bundle" --mirrorcal-fixtures > /dev/null
           ok=0
           for attempt in $(seq 1 10); do
             if curl -sS --max-time 3 "http://127.0.0.1:8765/health" -o artifacts/health.json; then
@@ -112,18 +149,33 @@ jobs:
             fi
             sleep 2
           done
-          [ "$ok" -eq 1 ] || { echo "::warning::debug bridge never answered"; }
+          [ "$ok" -eq 1 ] || { echo "::error::debug bridge never answered"; exit 1; }
 
           sleep 6
-          xcrun simctl io "$udid" screenshot artifacts/screen.png
-          if [ "$(stat -f %z artifacts/screen.png)" -le 100000 ]; then
-            sleep 5
-            xcrun simctl io "$udid" screenshot artifacts/screen.png
-          fi
 
-          bytes=$(stat -f %z artifacts/screen.png)
-          echo "screenshot is ${bytes} bytes"
-          [ "$bytes" -gt 20000 ] || { echo "::warning::screenshot suspiciously small — the screen may be blank"; exit 1; }
+          for screen in status configuration log; do
+            curl -sS --max-time 5 -X POST -H 'Content-Type: application/json' \
+              -d "{\"screen\": \"$screen\"}" "http://127.0.0.1:8765/navigate" -o /dev/null
+
+            actual=$(curl -sS --max-time 5 "http://127.0.0.1:8765/screen" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["screen"])')
+            [ "$actual" = "$screen" ] \
+              || { echo "::error::asked for screen '$screen', bridge reports '$actual'"; exit 1; }
+
+            sleep 2
+            xcrun simctl io "$udid" screenshot "artifacts/screen-$screen.png"
+            bytes=$(stat -f %z "artifacts/screen-$screen.png")
+            echo "screen-$screen.png is ${bytes} bytes"
+            [ "$bytes" -gt 20000 ] \
+              || { echo "::error::screen-$screen.png is suspiciously small — the screen may be blank"; exit 1; }
+          done
+
+          # Exercises the fixture-backed sync end to end, and dumps state for the artifact —
+          # cheap on the same run rather than a second one to answer "does /sync actually work".
+          curl -sS --max-time 30 -X POST "http://127.0.0.1:8765/sync" -o artifacts/sync-outcome.json || true
+          curl -sS --max-time 5 "http://127.0.0.1:8765/state" -o artifacts/state.json || true
+          curl -sS --max-time 5 "http://127.0.0.1:8765/calendars" -o artifacts/calendars.json || true
+
           xcrun simctl terminate "$udid" "$bundle" || true
 
       # No fixture mode and no debug bridge in Release — this is the plain "does it draw

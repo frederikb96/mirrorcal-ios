@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Array-valued keys, which INFOPLIST_KEY_ build settings cannot express — that mechanism
+	     covers the scalar keys already declared as build settings (calendar usage description
+	     among them), and whether it reaches an array-valued one is exactly the kind of thing that
+	     fails silently and reads as an OS restriction. GENERATE_INFOPLIST_FILE stays on so the
+	     generated keys merge with these rather than being replaced by them; the Mac workflow
+	     asserts both survive into the built bundle.
+
+	     `fetch` and `processing` are what let BGAppRefreshTask and BGProcessingTask run at all —
+	     without them a background task is scheduled and silently never fires, which reads as iOS
+	     refusing to cooperate rather than as a missing declaration. `remote-notification` is what
+	     lets the push sidecar's silent (content-available) push wake the app; without it a
+	     backgrounded phone never runs a sync from a push no matter how reliably the sidecar sends
+	     one, which reads as the sidecar not working. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+		<string>remote-notification</string>
+	</array>
+
+	<!-- Every identifier a BGTaskScheduler task is registered under (`BackgroundTasks.swift`) has
+	     to appear here or `register(forTaskWithIdentifier:)` refuses it — again silently, at
+	     registration time, with no crash and no log line pointing at the mismatch. -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.frederikberg.mirrorcal.refresh</string>
+		<string>com.frederikberg.mirrorcal.reconcile</string>
+	</array>
+</dict>
+</plist>
