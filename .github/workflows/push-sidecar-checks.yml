@@ -1,0 +1,117 @@
+name: Push sidecar checks
+
+# Everything that does not require publishing anything: does the Go service build, do its
+# tests pass, does the Helm chart lint, does the container image actually build. Scoped to
+# this component's own paths so an iOS-only PR never queues it.
+#
+# 🚨 GitHub-hosted `ubuntu-latest` only, same reasoning as `Free checks`: this repository is
+# public, so standard runners are free, and a `pull_request` trigger runs the workflow file
+# as it exists on the PR's own head — a self-hosted runner named here would let a stranger's
+# fork execute inside the cluster.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'push-sidecar/**'
+      - 'charts/mirrorcal-push/**'
+      - '.github/workflows/push-sidecar-checks.yml'
+  pull_request:
+    paths:
+      - 'push-sidecar/**'
+      - 'charts/mirrorcal-push/**'
+      - '.github/workflows/push-sidecar-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: push-sidecar
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: push-sidecar/go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Format
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: azure/setup-helm@v4
+        with: { version: v3.17.0 }
+
+      - name: Lint chart
+        run: helm lint charts/mirrorcal-push
+
+      - name: Template with representative values
+        # A template render catches what lint alone doesn't: a `required` guard that never
+        # fires because nothing exercises that value, a typo'd field reference that renders
+        # as an empty string instead of failing. Values chosen to exercise every optional
+        # resource (ingress+TLS+cert-manager, ServiceMonitor, PrometheusRule).
+        run: |
+          cat > /tmp/values.yaml <<'EOF'
+          apns:
+            keyId: "CI0000TEST"
+            teamId: "CI0000TEST"
+            bundleId: "com.example.ci"
+            authKey:
+              existingSecret: "ci-apns-key"
+          registration:
+            sharedSecret:
+              existingSecret: "ci-registration-secret"
+          ingress:
+            className: "nginx"
+            host: "mirrorcal-push.ci.example.com"
+            tls:
+              secretName: "ci-tls"
+              certManager:
+                enabled: true
+                issuerName: "letsencrypt"
+          serviceMonitor:
+            enabled: true
+          alerts:
+            enabled: true
+          EOF
+          helm template ci charts/mirrorcal-push -f /tmp/values.yaml > /dev/null
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: push-sidecar
+          push: false

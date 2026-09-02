@@ -1,0 +1,28 @@
+{{- if .Values.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "mirrorcal-push.fullname" . }}
+  labels:
+    {{- include "mirrorcal-push.labels" . | nindent 4 }}
+    {{- with .Values.alerts.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: mirrorcal-push
+      rules:
+        - alert: MirrorCalNoSuccessfulPush
+          # Guarded by registered_devices > 0: a fresh install with nobody registered
+          # yet has never had a successful push and never will until someone opens the
+          # app, which is not an alert-worthy state.
+          expr: >-
+            (time() - mirrorcal_push_last_success_timestamp_seconds > {{ .Values.alerts.noSuccessHours }} * 3600)
+            and mirrorcal_registered_devices > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "MirrorCal push sidecar has not sent a successful push in over {{ .Values.alerts.noSuccessHours }}h"
+            description: "mirrorcal_push_last_success_timestamp_seconds has not advanced in over {{ .Values.alerts.noSuccessHours }} hours while at least one device is registered. Check APNs key id, team id and topic, and the pod's own logs."
+{{- end }}

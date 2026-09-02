@@ -1,0 +1,26 @@
+mirrorcal-push is installed.
+
+{{- if .Values.ingress.enabled }}
+Registration endpoint: https://{{ .Values.ingress.host }}/api/register
+{{- else }}
+Ingress is disabled — reach the Service ({{ include "mirrorcal-push.fullname" . }}, port
+{{ .Values.service.port }}) however your cluster routes internal traffic, or enable ingress.
+{{- end }}
+
+Check it is healthy:
+  kubectl -n {{ .Release.Namespace }} get pods -l {{ include "mirrorcal-push.selectorLabels" . | replace "\n" "," }}
+  kubectl -n {{ .Release.Namespace }} logs -l {{ include "mirrorcal-push.selectorLabels" . | replace "\n" "," }} --tail=50
+
+In the app's own settings screen, set:
+  - the registration URL above
+  - the same shared secret you gave this chart under registration.sharedSecret
+
+Once a device registers, the ticker sends it a silent push every {{ .Values.push.intervalMinutes }} minutes.
+{{- if .Values.serviceMonitor.enabled }}
+Metrics are scraped by whatever Prometheus selects ServiceMonitors with the labels you set in
+serviceMonitor.labels. mirrorcal_push_last_success_timestamp_seconds is the first thing to check
+if the app stops syncing.
+{{- else }}
+Set serviceMonitor.enabled (and, for an unattended alert, alerts.enabled) to have this cluster's
+Prometheus watch mirrorcal_push_last_success_timestamp_seconds for you.
+{{- end }}
