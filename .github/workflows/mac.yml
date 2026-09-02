@@ -1,0 +1,159 @@
+name: Mac
+
+# Everything that genuinely needs Apple hardware — building the app target, and running it in a
+# simulator to see what it draws.
+#
+# 🚨 **Not triggered by pushes to main, deliberately.** A Mac run takes ten to thirty minutes and
+# queues for a scarcer machine, so firing one on every commit buries the answer you wanted under
+# twenty you did not. Work on a branch, then ask for one run when there is something worth
+# looking at — `gh workflow run mac.yml` — or open a pull request. Batch the questions into that
+# one run rather than spending several to answer them one at a time.
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_app:
+        description: 'Boot a simulator and run the app (slower; skip for a compile-only check)'
+        type: boolean
+        default: true
+      configuration:
+        description: 'Build configuration. Release before a release — DEBUG-only code compiles out, and that error surfaces nowhere else.'
+        type: choice
+        options: [Debug, Release]
+        default: Debug
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.6'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: dd-${{ runner.os }}-${{ hashFiles('MirrorCalKit/Package.swift', 'MirrorCal.xcodeproj/project.pbxproj') }}
+          restore-keys: dd-${{ runner.os }}-
+
+      # Everything else in the package is already green from free-checks, so this builds only the
+      # app target — the part that needs an iOS SDK.
+      - name: Build the app
+        run: |
+          set -o pipefail
+          xcodebuild -project MirrorCal.xcodeproj -scheme MirrorCal \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration "${{ inputs.configuration || 'Debug' }}" -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO build 2>&1 | tee /tmp/build.log | tail -20
+
+      - name: Surface compiler errors
+        if: failure()
+        run: |
+          grep -E "error:" /tmp/build.log | head -40 || echo "no compiler errors in the log"
+
+      - name: Boot a simulator
+        id: sim
+        if: inputs.run_app != false
+        run: |
+          # Chosen from what the image actually has: runner images change their device list
+          # between releases, and a hardcoded name fails late and confusingly.
+          udid=$(xcrun simctl list devices available -j | python3 -c "
+          import json,sys
+          devices = json.load(sys.stdin)['devices']
+          for runtime in sorted(devices, reverse=True):
+              if 'iOS' not in runtime: continue
+              for d in devices[runtime]:
+                  if d.get('isAvailable') and 'iPhone' in d['name']:
+                      print(d['udid']); raise SystemExit
+          ")
+          [ -n "$udid" ] || { echo 'no iPhone simulator available'; exit 1; }
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+          # Freddy runs the app in dark mode, and every design judgement made from a light
+          # screenshot is a judgement about a screen nobody looks at.
+          xcrun simctl ui "$udid" appearance dark
+
+      - name: Install the app
+        if: inputs.run_app != false
+        run: |
+          udid="${{ steps.sim.outputs.udid }}"
+          app=$(find build/dd/Build/Products -name '*.app' -maxdepth 3 | head -1)
+          [ -n "$app" ] || { echo 'build produced no .app'; exit 1; }
+          xcrun simctl install "$udid" "$app"
+
+      # The debug bridge only exists in Debug builds — fixture mode and the router are both
+      # `#if DEBUG`. Launches the app, polls `/health` until the bridge answers, settles past the
+      # first frame, then screenshots. The retake and the size floor both guard against the same
+      # race: `/health` answers the moment the process is alive, well before the first frame is
+      # drawn, so "the bridge responded" proves nothing about what is on screen.
+      - name: Screenshot the app
+        if: inputs.run_app != false && (inputs.configuration || 'Debug') == 'Debug'
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          udid="${{ steps.sim.outputs.udid }}"
+          bundle=com.frederikberg.mirrorcal
+
+          xcrun simctl launch "$udid" "$bundle" > /dev/null
+          ok=0
+          for attempt in $(seq 1 10); do
+            if curl -sS --max-time 3 "http://127.0.0.1:8765/health" -o artifacts/health.json; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok" -eq 1 ] || { echo "::warning::debug bridge never answered"; }
+
+          sleep 6
+          xcrun simctl io "$udid" screenshot artifacts/screen.png
+          if [ "$(stat -f %z artifacts/screen.png)" -le 100000 ]; then
+            sleep 5
+            xcrun simctl io "$udid" screenshot artifacts/screen.png
+          fi
+
+          curl -sS --max-time 3 "http://127.0.0.1:8765/logs?level=info&limit=200" \
+            -o artifacts/logs.json || true
+
+          bytes=$(stat -f %z artifacts/screen.png)
+          echo "screenshot is ${bytes} bytes"
+          [ "$bytes" -gt 20000 ] || { echo "::warning::screenshot suspiciously small — the screen may be blank"; exit 1; }
+          xcrun simctl terminate "$udid" "$bundle" || true
+
+      # No fixture mode and no debug bridge in Release — this is the plain "does it draw
+      # anything" check the Debug path above replaces with a debug-bridge-backed screenshot.
+      - name: Screenshot the running app
+        if: inputs.run_app != false && (inputs.configuration || 'Debug') == 'Release'
+        run: |
+          mkdir -p artifacts
+          udid="${{ steps.sim.outputs.udid }}"
+          xcrun simctl launch "$udid" com.frederikberg.mirrorcal
+          # launch returns once the process exists, which is before it has drawn anything.
+          sleep 8
+          xcrun simctl io "$udid" screenshot artifacts/screen.png
+          bytes=$(stat -f %z artifacts/screen.png)
+          echo "screenshot is $bytes bytes"
+          [ "$bytes" -gt 20000 ] || { echo 'suspiciously small — the screen may be blank'; exit 1; }
+
+      - name: Application logs
+        if: always() && inputs.run_app != false
+        run: |
+          mkdir -p artifacts
+          xcrun simctl spawn "${{ steps.sim.outputs.udid }}" log show --last 3m --style compact \
+            --predicate 'processImagePath CONTAINS "MirrorCal"' > artifacts/app.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-artifacts
+          path: artifacts/
+          retention-days: 14

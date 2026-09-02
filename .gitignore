@@ -1,0 +1,31 @@
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+
+# Signing artefacts — never commit these
+*.mobileprovision
+*.p12
+*.cer
+*.certSigningRequest
+AuthKey_*.p8
+
+# Build output
+*.ipa
+*.dSYM.zip
+*.xcarchive
+
+# macOS
+.DS_Store
+
+# Its own private git repo
+.claude/

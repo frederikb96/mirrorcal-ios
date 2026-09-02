@@ -1,0 +1,106 @@
+name: Free checks
+
+# Everything that does not require Apple hardware, on a GitHub-hosted Linux runner.
+#
+# This is where nearly all of the real checking happens. Only files behind a `canImport(Network)`
+# or similar Apple-only guard sit outside it, so the package — its models, its tests — compiles
+# and runs here. A Linux run finishes in a couple of minutes; a Mac run takes ten to thirty and
+# has to queue for a scarcer machine, so anything that can be proven here should be.
+#
+# Keep it that way when adding code: prefer a shape that builds on Linux, and guard an Apple-only
+# import rather than letting it pull the whole package onto a Mac.
+#
+# 🚨 **Linux runs here, never on a self-hosted runner.** A `pull_request` trigger runs the
+# workflow file as it exists on the pull request's own head, so on a public repository a stranger
+# can rewrite this file and execute what they like on whatever machine it names. A self-hosted
+# runner is a machine inside the cluster; a GitHub-hosted one is a throwaway VM that can reach
+# nothing. Standard Linux and macOS runners are unmetered for public repositories, so there is
+# nothing to buy back by hosting this ourselves.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # Swift's own documented Ubuntu dependency list, plus curl/file/ca-certificates for the
+      # setup action itself — it downloads a toolchain, verifies its signature, and identifies
+      # the archive with `file`. Installed explicitly rather than assumed from the runner image,
+      # because a missing package surfaces late and unhelpfully: as "Unable to locate executable
+      # file", or as the freshly unpacked toolchain failing to load a shared library.
+      - name: Install Swift toolchain dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            binutils ca-certificates curl file gnupg2 libc6-dev libcurl4-openssl-dev libedit2 \
+            libgcc-13-dev libncurses-dev libpython3-dev libsqlite3-0 libstdc++-13-dev \
+            libxml2-dev libz3-dev pkg-config tzdata unzip zlib1g-dev
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '6.2'
+
+      # Dependencies are fetched and rebuilt on every run otherwise, which is most of the wall
+      # time here. Keyed on the manifest so a dependency change invalidates it.
+      - uses: actions/cache@v4
+        with:
+          path: MirrorCalKit/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('MirrorCalKit/Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build and test the package
+        run: |
+          set -o pipefail
+          swift build --package-path MirrorCalKit --build-tests 2>&1 | tee /tmp/build.log
+          swift test --package-path MirrorCalKit --skip-build
+
+      # The only check that reaches the app target and any package files a future manifest
+      # excludes from Linux, which nothing else here compiles. See the script's header for what
+      # it can and cannot catch.
+      - name: Syntax-check what Linux cannot compile
+        run: ./Tooling/parse-swift.sh
+
+      # Everything past syntax that the app target would otherwise only fail on a macOS runner
+      # billed at ten times this one. Each pattern it knows has cost a real build.
+      - name: Scan for Swift 6 shapes only a Mac would reject
+        run: ./Tooling/swift6-lint.py
+
+      - name: Format
+        run: swift format lint --recursive --strict MirrorCalKit MirrorCal
+
+      # Compiler errors sit far above the last lines of a long build, so a truncated log leaves a
+      # failure reporting nothing but an exit code.
+      - name: Surface compiler errors
+        if: failure()
+        run: |
+          grep -E "error:" /tmp/build.log | head -40 || echo "no compiler errors in the log"
+
+      # swift-format can fix everything it reports, but neither peer has a Swift toolchain to run
+      # it on. Publishing the correction means a formatting failure is resolved with
+      # `gh run download` and `git apply` rather than by hand-editing from line numbers.
+      - name: Publish the formatting correction as a patch
+        if: failure()
+        run: |
+          swift format --in-place --recursive MirrorCalKit MirrorCal
+          git diff > format.patch
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: format-patch
+          path: format.patch
+          retention-days: 5
