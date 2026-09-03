@@ -59,8 +59,27 @@ public enum EventKitCalendarCatalog {
         if mask.contains(.unavailable) { result.insert(.unavailable) }
         // A calendar reporting no supported values at all (some local calendars do) still has to
         // accept *something* — `.degraded` treats an empty set as "nothing survives but busy",
-        // which is the safe default rather than a crash or a silently dropped block.
+        // except `.free` itself, which it always lets through regardless of what this set
+        // contains; see `EventAvailability.degraded`.
         return result
+    }
+
+    /// Shared by `EventKitSourceCalendar` (reading the source's own availability) and
+    /// `EventKitDestinationStore` (reading back what was actually written) — one implementation
+    /// rather than two identical private ones that could silently drift apart.
+    static func mirrorAvailability(for value: EKEventAvailability) -> EventAvailability {
+        switch value {
+        case .busy: .busy
+        case .free: .free
+        case .tentative: .tentative
+        case .unavailable: .unavailable
+        // `.notSupported` has no `EventAvailability` equivalent — degrading to `.busy` rather
+        // than dropping the event blocks the hour and loses only the label, matching
+        // `EventAvailability.degraded`'s own reasoning for a destination that cannot express a
+        // finer distinction.
+        case .notSupported: .busy
+        @unknown default: .busy
+        }
     }
 
     private static func accountType(for calendar: EKCalendar) -> String {

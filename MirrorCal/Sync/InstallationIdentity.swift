@@ -1,4 +1,56 @@
 import Foundation
+import MirrorCalKit
+import Security
+
+/// Persists the installation identifier in the keychain — survives app deletion, which is exactly
+/// the lifetime this value needs: it has to outlive the app container for as long as the
+/// destination calendar it wrote into does. Shape copied from `SyncSecretStore`, the existing
+/// generic-password wrapper for the sidecar's shared secret.
+struct KeychainInstallationIdentityStore: InstallationIdentityStore {
+    private let service = "com.frederikberg.mirrorcal.installation-identity"
+    private let account = "installation-identifier"
+
+    func read() -> String? {
+        var query = baseQuery()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func write(_ value: String) {
+        let data = Data(value.utf8)
+        var query = baseQuery()
+        SecItemDelete(query as CFDictionary)
+        query[kSecValueData as String] = data
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    private func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+    }
+}
+
+/// Where the identifier lived before this fix — `UserDefaults`, wiped by app deletion, which is
+/// the reinstall-duplication bug this replaces. Kept only so a value an earlier install already
+/// minted can be adopted into the keychain instead of orphaned; nothing writes here anymore.
+struct LegacyUserDefaultsInstallationIdentityStore: InstallationIdentityStore {
+    private let key = "mirrorcal.installation-identifier"
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func read() -> String? { defaults.string(forKey: key) }
+    func write(_ value: String) { defaults.set(value, forKey: key) }
+}
 
 /// A UUID minted once per install and threaded into every stamp this install writes, so two
 /// independent MirrorCal installs pointed at the same destination calendar can each tell their
@@ -7,20 +59,15 @@ import Foundation
 /// deletes them.
 ///
 /// Not part of `SyncSettings`: it is never user-facing and never round-trips through the
-/// Configuration screen, so it gets its own `UserDefaults` key rather than living in a struct
-/// whose whole reason to exist is what that screen edits.
+/// Configuration screen, so it gets its own keychain item rather than living in a struct whose
+/// whole reason to exist is what that screen edits.
 public enum InstallationIdentity {
-    private static let key = "mirrorcal.installation-identifier"
-
-    /// Reads the persisted identifier, minting and persisting a new one on first launch. Stable
-    /// for the lifetime of the install — reinstalling the app mints a new one, which is correct:
-    /// a fresh install has written nothing yet for an old identifier to protect.
-    public static func current(defaults: UserDefaults = .standard) -> String {
-        if let existing = defaults.string(forKey: key) {
-            return existing
-        }
-        let minted = UUID().uuidString
-        defaults.set(minted, forKey: key)
-        return minted
+    /// Stable for the lifetime of the destination calendar's relationship with this install.
+    /// Backed by the keychain (`KeychainInstallationIdentityStore`), which survives a
+    /// delete-and-reinstall — `UserDefaults` would not, which is exactly the bug this replaces.
+    public static func current() -> String {
+        InstallationIdentityResolver.resolve(
+            durable: KeychainInstallationIdentityStore(),
+            legacy: LegacyUserDefaultsInstallationIdentityStore())
     }
 }

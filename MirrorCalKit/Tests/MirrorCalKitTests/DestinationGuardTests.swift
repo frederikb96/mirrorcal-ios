@@ -52,6 +52,33 @@ final class DestinationGuardTests: XCTestCase {
         }
     }
 
+    /// The belt-and-braces half of the reinstall fix: a calendar already holding another
+    /// installation's mirror is still *accepted* — a shared destination is a legitimate
+    /// configuration (row 28/42) — but the count of foreign events is surfaced rather than
+    /// silently absorbed, so picking a calendar that turns out to already be someone else's
+    /// mirror at least says so with a number.
+    func testAcceptedCalendarReportsHowManyStampedEventsBelongToAForeignInstallation() async {
+        let foreign = DestinationEvent(
+            identifier: "foreign-1",
+            stamp: MirrorStamp(
+                sourceExternalIdentifier: "ext-1", occurrenceStart: Date(timeIntervalSince1970: 1_780_000_000),
+                installationIdentifier: "another-install"),
+            title: "Team Sync",
+            occurrenceStart: Date(timeIntervalSince1970: 1_780_000_000),
+            occurrenceEnd: Date(timeIntervalSince1970: 1_780_003_600)
+        )
+        // `stamped("a")`'s own installation identifier is `SyncConfiguration`'s default
+        // ("default"), so validating against the default configuration is what keeps it counted
+        // as "ours" and leaves only `foreign` counted as foreign.
+        let result = DestinationGuard.validateForConfiguration(
+            existingEvents: [stamped("a"), foreign], configuration: SyncConfiguration())
+
+        guard case .success(let foreignCount) = result else {
+            return XCTFail("a foreign-only mirror must still be accepted")
+        }
+        XCTAssertEqual(foreignCount, 1, "must count only events stamped by a different installation")
+    }
+
     // MARK: - Per-sync guard (the same property, enforced where it actually matters: every run)
 
     /// The configuration-time check above is a courtesy; this is the guarantee that actually

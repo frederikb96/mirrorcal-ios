@@ -103,6 +103,9 @@ struct ConfigurationView: View {
                             message:
                                 "This calendar already has \(count) event(s) MirrorCal didn't create. "
                                 + "Pick an empty calendar dedicated to the mirror.")
+                    case .failure(.unableToVerify):
+                        return .rejected(
+                            message: "Couldn't check this calendar for existing events — try again.")
                     }
                 }
             }

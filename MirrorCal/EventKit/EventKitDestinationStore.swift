@@ -49,28 +49,48 @@ public final class EventKitDestinationStore: DestinationCalendarStore, @unchecke
     /// destination identifier, and the next ordinary sync's own fresh `events(in:)` scan will see
     /// whatever the real state actually is and reconcile from there, which is the same
     /// self-healing property `SyncEngine.plan` already has for every other kind of drift.
+    ///
+    /// An update or delete also skips a resolved event that no longer belongs to *this* store's
+    /// own calendar — every identifier reaching here came from a scan already restricted to this
+    /// calendar, so this never fires in practice today, but `calendarItemIdentifier` is documented
+    /// as invalidatable by a full account sync, and re-checking here makes the source-safety
+    /// guarantee structural rather than a property borrowed from the caller.
+    ///
+    /// `pendingActions` is always cleared, success or failure, so a store instance never carries a
+    /// stale batch into its next `commit()`. On failure, `store.reset()` discards whatever this
+    /// batch had already staged into the shared `EKEventStore` — without it, an unrelated *later*
+    /// `commit()` on this same process would flush this batch's partial writes along with its own.
     public func commit() throws {
         guard let calendar = resolvedCalendar() else {
             throw EventKitCalendarError.calendarNotFound
         }
-        for action in pendingActions {
-            switch action {
-            case .create(let content):
-                let event = EKEvent(eventStore: store)
-                event.calendar = calendar
-                apply(content, to: event)
-                try store.save(event, span: .thisEvent, commit: false)
-            case .update(let identifier, let content):
-                guard let event = store.calendarItem(withIdentifier: identifier) as? EKEvent else { continue }
-                apply(content, to: event)
-                try store.save(event, span: .thisEvent, commit: false)
-            case .delete(let identifier):
-                guard let event = store.calendarItem(withIdentifier: identifier) as? EKEvent else { continue }
-                try store.remove(event, span: .thisEvent, commit: false)
+        defer { pendingActions = [] }
+        do {
+            for action in pendingActions {
+                switch action {
+                case .create(let content):
+                    let event = EKEvent(eventStore: store)
+                    event.calendar = calendar
+                    apply(content, to: event)
+                    try store.save(event, span: .thisEvent, commit: false)
+                case .update(let identifier, let content):
+                    guard let event = store.calendarItem(withIdentifier: identifier) as? EKEvent,
+                        event.calendar?.calendarIdentifier == calendar.calendarIdentifier
+                    else { continue }
+                    apply(content, to: event)
+                    try store.save(event, span: .thisEvent, commit: false)
+                case .delete(let identifier):
+                    guard let event = store.calendarItem(withIdentifier: identifier) as? EKEvent,
+                        event.calendar?.calendarIdentifier == calendar.calendarIdentifier
+                    else { continue }
+                    try store.remove(event, span: .thisEvent, commit: false)
+                }
             }
+            try store.commit()
+        } catch {
+            store.reset()
+            throw error
         }
-        pendingActions = []
-        try store.commit()
     }
 
     private func resolvedCalendar() -> EKCalendar? {
@@ -104,7 +124,7 @@ public final class EventKitDestinationStore: DestinationCalendarStore, @unchecke
             occurrenceStart: event.startDate,
             occurrenceEnd: event.endDate,
             isAllDay: event.isAllDay,
-            availability: mirrorAvailability(for: event.availability),
+            availability: EventKitCalendarCatalog.mirrorAvailability(for: event.availability),
             timeZoneIdentifier: event.isAllDay ? nil : event.timeZone?.identifier
         )
     }
@@ -115,17 +135,6 @@ public final class EventKitDestinationStore: DestinationCalendarStore, @unchecke
         case .free: .free
         case .tentative: .tentative
         case .unavailable: .unavailable
-        }
-    }
-
-    private static func mirrorAvailability(for value: EKEventAvailability) -> EventAvailability {
-        switch value {
-        case .busy: .busy
-        case .free: .free
-        case .tentative: .tentative
-        case .unavailable: .unavailable
-        case .notSupported: .busy
-        @unknown default: .busy
         }
     }
 }

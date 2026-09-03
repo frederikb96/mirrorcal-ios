@@ -165,4 +165,75 @@ final class DriftConvergenceTests: XCTestCase {
         XCTAssertEqual(plan.updates.count, 1)
         XCTAssertEqual(plan.updates.first?.content.title, "Team Sync")
     }
+
+    // MARK: - A mirror aging out of the sync window must still be deletable (row: window stranding)
+
+    /// Scanning both sides over the same, narrow window is exactly the shape that strands a
+    /// mirror once the event it came from ages out of that window (continuously, at the trailing
+    /// edge, or abruptly when the window is narrowed): the destination scan simply never sees it
+    /// again, so it can never be the far side of a `sourceNoLongerPresent` deletion. Watched
+    /// failing first, by passing no `destinationWindow` (letting it default to the narrow one) —
+    /// see the mutation this file's own report describes.
+    func testAMirrorThatAgedOutOfTheNarrowSourceWindowIsStillDeletedWhenTheDestinationIsScannedWider() async throws {
+        // A narrow "current" window that no longer contains the aged-out event's own occurrence —
+        // modelling both the trailing-edge and the window-just-narrowed case identically, since
+        // from `synchronize`'s point of view they are the same input.
+        let narrowWindow = DateInterval(
+            start: Date(timeIntervalSince1970: 1_700_000_000), end: Date(timeIntervalSince1970: 1_800_000_000))
+        // Just before the narrow window's own start — outside it, but well inside any sane
+        // padding, which is the case that actually happens in production (an event aging out a
+        // few months, or a window narrowed by a few months) rather than an extreme one.
+        let agedOutStart = narrowWindow.start.addingTimeInterval(-5_000_000)
+        let agedOutMirror = DestinationEvent(
+            identifier: "dest-aged-out",
+            stamp: MirrorStamp(sourceExternalIdentifier: "aged-out-1", occurrenceStart: agedOutStart),
+            title: "Long gone from the source window",
+            occurrenceStart: agedOutStart,
+            occurrenceEnd: agedOutStart.addingTimeInterval(3_600)
+        )
+        let widePadding: TimeInterval = 2 * 365 * 24 * 3600
+        let widerDestinationWindow = DateInterval(
+            start: narrowWindow.start.addingTimeInterval(-widePadding),
+            end: narrowWindow.end.addingTimeInterval(widePadding))
+
+        let store = FakeDestinationStore(seed: [agedOutMirror])
+        let result = try engine.synchronize(
+            source: FakeSourceCalendar(instances: []),
+            destination: store,
+            cache: .empty,
+            configuration: SyncConfiguration(),
+            window: narrowWindow,
+            destinationWindow: widerDestinationWindow
+        )
+
+        XCTAssertEqual(result.outcome.deleted, 1, "the aged-out mirror must be reachable by the delete pass")
+        XCTAssertTrue(store.allEvents().isEmpty)
+    }
+
+    /// The default (`destinationWindow: nil`) must keep scanning both sides over the same window
+    /// — this is the property that makes the wider parameter opt-in rather than a silent change
+    /// in behaviour for every existing caller.
+    func testWithNoDestinationWindowGivenBothSidesAreScannedOverTheSameWindow() async throws {
+        let agedOutMirror = DestinationEvent(
+            identifier: "dest-aged-out",
+            stamp: stamp("aged-out-1", 100_000),
+            title: "Outside the window on both sides",
+            occurrenceStart: Date(timeIntervalSince1970: 100_000),
+            occurrenceEnd: Date(timeIntervalSince1970: 103_600)
+        )
+        let narrowWindow = DateInterval(
+            start: Date(timeIntervalSince1970: 1_700_000_000), end: Date(timeIntervalSince1970: 1_800_000_000))
+        let store = FakeDestinationStore(seed: [agedOutMirror])
+
+        let result = try engine.synchronize(
+            source: FakeSourceCalendar(instances: []),
+            destination: store,
+            cache: .empty,
+            configuration: SyncConfiguration(),
+            window: narrowWindow
+        )
+
+        XCTAssertEqual(result.outcome.deleted, 0, "invisible to both scans, so it cannot be deleted or created")
+        XCTAssertEqual(store.allEvents().count, 1, "left exactly as it was — stranded, not touched")
+    }
 }

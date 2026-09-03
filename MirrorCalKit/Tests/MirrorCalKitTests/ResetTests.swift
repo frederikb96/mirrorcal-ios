@@ -70,4 +70,21 @@ final class ResetTests: XCTestCase {
         XCTAssertEqual(store.allEvents().count, 1)
         XCTAssertEqual(store.allEvents().first?.title, "Team Sync")
     }
+
+    /// `applyReset` is the shape the app target's reset control actually calls — `resetPlan` plus
+    /// staging plus one commit, in one call, because `SyncPlan` has no public initializer outside
+    /// this module for a caller to build one from `resetPlan`'s bare `[Deletion]` by hand.
+    func testApplyResetDeletesEveryStampedEventAndCommitsOnce() async throws {
+        let engine = SyncEngine()
+        let store = FakeDestinationStore(seed: [
+            stamped("a", externalId: "ext-1"), stamped("b", externalId: "ext-2"), unstamped("c"),
+        ])
+
+        let removed = try engine.applyReset(
+            destination: store.allEvents(), configuration: SyncConfiguration(), to: store)
+
+        XCTAssertEqual(removed, 2)
+        XCTAssertEqual(store.commitCount, 1, "one commit for the whole reset, not one per deletion")
+        XCTAssertEqual(store.allEvents().map(\.identifier), ["c"], "the unstamped event must survive a reset")
+    }
 }

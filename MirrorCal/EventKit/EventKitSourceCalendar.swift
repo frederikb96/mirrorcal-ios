@@ -60,26 +60,12 @@ public struct EventKitSourceCalendar: SourceCalendarReading, @unchecked Sendable
             title: event.title ?? "",
             location: event.location,
             notes: event.notes,
-            availability: mirrorAvailability(for: event.availability),
+            availability: EventKitCalendarCatalog.mirrorAvailability(for: event.availability),
             // `nil` for a floating event, per `EKEvent.occurrenceDate`'s own documented
             // behaviour for all-day events — copying the source's own zone rather than
             // synthesising one from the reading device is Android's D8 defect, not repeated here.
             timeZoneIdentifier: event.isAllDay ? nil : event.timeZone?.identifier,
             status: event.status == .canceled ? .cancelled : .confirmed
         )
-    }
-
-    /// `.notSupported` has no `EventAvailability` equivalent — degrading it to `.busy` rather
-    /// than dropping the event is the same reasoning `EventAvailability.degraded` already uses
-    /// for a destination that cannot express a finer distinction: block the hour, lose the label.
-    private static func mirrorAvailability(for value: EKEventAvailability) -> EventAvailability {
-        switch value {
-        case .busy: .busy
-        case .free: .free
-        case .tentative: .tentative
-        case .unavailable: .unavailable
-        case .notSupported: .busy
-        @unknown default: .busy
-        }
     }
 }

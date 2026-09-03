@@ -47,6 +47,12 @@ struct MirrorCalApp: App {
             switch phase {
             case .active:
                 changeObserver.start()
+                // Idempotent and safe on every call (see its own doc comment) — this is the only
+                // place it is called at all, which is what makes it run on an ordinary launch
+                // (this fires as the app first becomes active) and again whenever the sidecar
+                // host or secret is filled in after enabling, since that just means backgrounding
+                // and returning to the app once.
+                Task { await MirrorCalAppDelegate.requestAuthorizationIfNeeded() }
                 Task { _ = await engine.run(reason: "foreground activation", trigger: .foreground) }
             case .background:
                 changeObserver.stop()

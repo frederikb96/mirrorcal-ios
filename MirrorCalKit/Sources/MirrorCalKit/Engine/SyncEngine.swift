@@ -30,8 +30,9 @@ public struct SyncEngine: Sendable {
         let desiredByKey = desired.byKey
         plan.sourceCollisions = desired.collisions
         plan.unstampableSourceEvents = desired.unstampableCount
-        let observedByKey = collapsingDuplicates(
-            groupedStampedDestinationEvents(destination, configuration: configuration), into: &plan)
+        let grouped = groupedStampedDestinationEvents(destination, configuration: configuration)
+        plan.existingOwnedByInstall = grouped.values.reduce(0) { $0 + $1.count }
+        let observedByKey = collapsingDuplicates(grouped, into: &plan)
 
         for (key, content) in desiredByKey {
             guard let existing = observedByKey[key] else {
@@ -69,9 +70,37 @@ public struct SyncEngine: Sendable {
             .sorted { $0.destinationIdentifier < $1.destinationIdentifier }
     }
 
+    /// Applies `resetPlan` and commits it in one call — the shape a "reset" control needs, since
+    /// `SyncPlan` has no public initializer a caller outside this module could build one from
+    /// `resetPlan`'s bare `[Deletion]` by hand. Bypasses `apply`'s circuit breaker entirely: reset
+    /// never creates anything, so there is nothing for it to guard against here.
+    @discardableResult
+    public func applyReset(
+        destination: [DestinationEvent], configuration: SyncConfiguration, to store: any DestinationCalendarStore
+    ) throws -> Int {
+        let deletions = resetPlan(destination: destination, configuration: configuration)
+        for deletion in deletions {
+            try store.stage(.delete(destinationIdentifier: deletion.destinationIdentifier))
+        }
+        try store.commit()
+        return deletions.count
+    }
+
     /// Stages every action in the plan and commits once — a whole plan reaches the destination as
     /// one round trip's worth of writes rather than one per event.
-    public func apply(_ plan: SyncPlan, to store: any DestinationCalendarStore) throws -> SyncOutcome {
+    ///
+    /// Refuses the *entire* plan, writing nothing, when `circuitBreaker` trips and `force` is
+    /// not set — never a partial apply, which would leave the destination in a state neither the
+    /// old plan nor a corrected one describes. `force: true` is the conscious escape hatch: it
+    /// never trips silently, and nothing here sets it on the caller's behalf.
+    public func apply(
+        _ plan: SyncPlan, to store: any DestinationCalendarStore,
+        circuitBreaker: CreationCircuitBreaker = CreationCircuitBreaker(), force: Bool = false
+    ) throws -> SyncOutcome {
+        if !force, circuitBreaker.tripped(creations: plan.creations.count, existingOwned: plan.existingOwnedByInstall) {
+            throw SyncApplyError.suspectedRunaway(
+                creations: plan.creations.count, existingOwned: plan.existingOwnedByInstall)
+        }
         for content in plan.creations {
             try store.stage(.create(content))
         }
@@ -99,18 +128,28 @@ public struct SyncEngine: Sendable {
     /// run's own plan. `cache` is accepted only so the type threads end to end for a caller that
     /// wants to persist one between launches — nothing in this function ever reads it to decide
     /// anything, which is the property `DriftConvergenceTests` exercises directly.
+    ///
+    /// `destinationWindow`, when given, is what the destination side is scanned over instead of
+    /// `window` — deliberately wider, so a mirror that has aged out of `window` on the source side
+    /// (continuously, at the trailing edge, or abruptly because the window was just narrowed) is
+    /// still visible to the destination scan and can still be deleted rather than stranded. `nil`
+    /// (the default) scans both sides over the same `window`, which is what every existing caller
+    /// not deliberately passing this gets.
     @discardableResult
     public func synchronize(
         source: any SourceCalendarReading,
         destination: any DestinationCalendarStore,
         cache: SyncCache,
         configuration: SyncConfiguration,
-        window: DateInterval
+        window: DateInterval,
+        destinationWindow: DateInterval? = nil,
+        circuitBreaker: CreationCircuitBreaker = CreationCircuitBreaker(),
+        force: Bool = false
     ) throws -> (outcome: SyncOutcome, plan: SyncPlan, cache: SyncCache) {
         let sourceEvents = try source.events(in: window)
-        let destinationEvents = try destination.events(in: window)
+        let destinationEvents = try destination.events(in: destinationWindow ?? window)
         let plan = plan(source: sourceEvents, destination: destinationEvents, configuration: configuration)
-        let outcome = try apply(plan, to: destination)
+        let outcome = try apply(plan, to: destination, circuitBreaker: circuitBreaker, force: force)
 
         var rebuiltCache = SyncCache(schemaVersion: SyncCache.currentSchemaVersion)
         for content in plan.creations + plan.updates.map(\.content) + plan.unchanged {

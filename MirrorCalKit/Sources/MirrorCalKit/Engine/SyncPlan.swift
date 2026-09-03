@@ -54,6 +54,11 @@ public struct SyncPlan: Sendable, Equatable {
     /// see `MirrorContent.mirroring(_:configuration:)` for why refusing outright is safer than
     /// minting a stamp guaranteed not to survive its own round trip.
     public var unstampableSourceEvents: Int = 0
+    /// How many destination events, before matching, carried a stamp with this run's own
+    /// `SyncConfiguration.installationIdentifier` — what `CreationCircuitBreaker` compares
+    /// `creations.count` against. Zero on a genuine first sync into an empty (or foreign-only)
+    /// calendar, which is what lets the breaker tell that case apart from a runaway.
+    public var existingOwnedByInstall: Int = 0
 
     public var isEmpty: Bool { creations.isEmpty && updates.isEmpty && deletions.isEmpty }
 }

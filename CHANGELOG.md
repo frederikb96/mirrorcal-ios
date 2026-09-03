@@ -37,3 +37,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that sends the app a scheduled silent push, giving it a background wake-up on a cadence iOS
   itself does not guarantee. Independent of the app and versioned/released separately — anyone
   with a Kubernetes cluster and their own Apple developer account can run their own copy.
+
+### Fixed
+
+- The installation identifier now lives in the keychain rather than `UserDefaults`, so deleting
+  and reinstalling the app no longer mints a new one — which used to make every previously
+  mirrored event invisible to the app and get recreated, doubling the destination calendar with
+  no way to clean it up.
+- Push registration now runs on every foreground activation, not only the moment sync is first
+  enabled — previously the deployed sidecar could go unregistered indefinitely, and filling in the
+  sidecar host or secret after enabling never triggered a retry.
+- Added a "Reset Mirror" control on the Status screen, with a confirmation that states how many
+  events it will remove before removing them. `SyncEngine`'s reset mechanism existed and was
+  tested but had no way to be invoked from the app.
+- A sync that would create a number of events comparable to how many this installation already
+  has in the destination is now refused rather than applied — the guard against an unbounded
+  create-storm if a mirrored event's identity stamp does not survive a round trip to the
+  destination and back. A first sync into an empty (or foreign-only) calendar is unaffected.
+- The destination calendar is now scanned over a wider window than the source when syncing, so a
+  mirrored event that has aged out of the source window — continuously, or because the window was
+  just narrowed — is still reachable by the delete pass instead of being stranded.
+- The destination-candidate check now refuses a calendar it could not read, instead of treating an
+  unresolvable calendar or a failed read as clean.
+- An update or delete now re-confirms the resolved event belongs to the destination calendar
+  before touching it, rather than trusting an identifier resolved store-wide.

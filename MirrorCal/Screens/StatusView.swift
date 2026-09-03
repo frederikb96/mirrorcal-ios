@@ -5,6 +5,8 @@ struct StatusView: View {
     @Environment(AppSyncEngine.self) private var engine
     @Environment(\.scenePhase) private var scenePhase
     @State private var accessStatus: CalendarAccessStatus = .notDetermined
+    @State private var resetCandidateCount: Int?
+    @State private var isConfirmingReset = false
 
     var body: some View {
         NavigationStack {
@@ -37,6 +39,45 @@ struct StatusView: View {
                     .accessibilityIdentifier("status.sync-now")
                 }
 
+                if let warning = engine.pendingRunawayConfirmation {
+                    Section("This sync was refused") {
+                        Label(
+                            "It wants to create \(warning.creations) event(s), close to the "
+                                + "\(warning.existingOwned) MirrorCal already has here. That usually means "
+                                + "something is wrong — most likely that mirrored events aren't being "
+                                + "recognised on the next sync — rather than a real bulk change.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .foregroundStyle(.red)
+                        Button("Create these events anyway", role: .destructive) {
+                            Task {
+                                await engine.run(
+                                    reason: "manual (forced past runaway guard)", trigger: .manual, force: true)
+                            }
+                        }
+                        .accessibilityIdentifier("status.force-sync")
+                    }
+                }
+
+                Section("Recovery") {
+                    Button(role: .destructive) {
+                        resetCandidateCount = engine.resetCandidateCount()
+                        isConfirmingReset = (resetCandidateCount ?? 0) > 0
+                    } label: {
+                        Text("Reset Mirror")
+                    }
+                    .disabled(engine.isSyncing || !engine.settings.isConfigured)
+                    .accessibilityIdentifier("status.reset")
+                    Label(
+                        "Removes every event this install has mirrored into the destination "
+                            + "calendar, then rebuilds it from scratch on the next sync. Use this if the "
+                            + "mirror looks wrong and a normal sync isn't fixing it.",
+                        systemImage: "arrow.counterclockwise"
+                    )
+                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                }
+
                 Section {
                     Label(
                         "Swiping MirrorCal away in the App Switcher stops background syncing until "
@@ -53,6 +94,19 @@ struct StatusView: View {
         .task { accessStatus = engine.calendarAccessStatus }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { accessStatus = engine.calendarAccessStatus }
+        }
+        // The count is fetched *before* this ever presents (see the button's action above), so
+        // the confirmation always states a real number rather than a placeholder — a number is
+        // the one thing that catches a wrong-calendar reset before it happens, not after.
+        .confirmationDialog(
+            "Delete \(resetCandidateCount ?? 0) event(s) from the destination calendar?",
+            isPresented: $isConfirmingReset,
+            titleVisibility: .visible
+        ) {
+            Button("Delete \(resetCandidateCount ?? 0) event(s)", role: .destructive) {
+                Task { await engine.performReset() }
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 

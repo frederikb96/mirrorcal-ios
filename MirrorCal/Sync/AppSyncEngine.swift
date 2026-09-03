@@ -68,8 +68,20 @@ public final class AppSyncEngine {
     /// Set right after a sync that actually committed something — `CalendarChangeObserver` reads
     /// this to suppress the `EKEventStoreChanged` notification the app's own write is expected to
     /// provoke, which is the guard against the self-triggering loop that type's own doc comment
-    /// describes.
+    /// describes. Left unset by a no-op sync, matching what the name says rather than what "ran
+    /// most recently" would.
     public private(set) var lastCommitAt: Date?
+    /// A run refused by `CreationCircuitBreaker`, waiting for a conscious decision — `nil` the
+    /// rest of the time. The Status screen reads this to offer "create these events anyway"
+    /// rather than leaving the run silently blocked; `run(force: true)` is what clears it.
+    public private(set) var pendingRunawayConfirmation: (creations: Int, existingOwned: Int)?
+    /// Consumed by `performSync`, which reads and resets it the moment a run starts — read from
+    /// `run(force:)` rather than threaded through `SyncCoordinator.Trigger`, which carries no
+    /// per-call payload. The gap between setting this and it being read is essentially zero (both
+    /// happen on this actor, one call apart), and a forced run is only ever pressed once a
+    /// previous run has already finished and `isSyncing` is false, so a coalesced run picking it
+    /// up by mistake is not a realistic race in practice.
+    @ObservationIgnored private var forceNextSync = false
 
     public init(
         store: EKEventStore = EKEventStore(),
@@ -106,19 +118,29 @@ public final class AppSyncEngine {
     /// The one entry point every trigger calls. `reason` is the human-readable log line — every
     /// trigger records a distinct one, at a finer grain than `trigger` itself distinguishes;
     /// `trigger` is what `SyncCoordinator` coalesces on.
+    ///
+    /// `force` is the conscious escape hatch past `CreationCircuitBreaker`: it defaults to false
+    /// for every ordinary caller, and the only call site that ever passes true is the Status
+    /// screen's "create these events anyway" button, offered after `pendingRunawayConfirmation`
+    /// is set by exactly this kind of refusal.
     @discardableResult
-    public func run(reason: String, trigger: SyncCoordinator.Trigger) async -> SyncOutcome? {
+    public func run(reason: String, trigger: SyncCoordinator.Trigger, force: Bool = false) async -> SyncOutcome? {
         isSyncing = true
         defer { isSyncing = false }
+        forceNextSync = force
         do {
             let outcome = try await coordinator.requestSync(trigger: trigger)
             historyStore.recordSuccess(reason: reason, outcome: outcome)
             lastHistory = historyStore.loadLast()
+            pendingRunawayConfirmation = nil
             DebugLogBuffer.shared.append(.info, "sync", "\(reason): \(Self.logSummary(outcome))")
             return outcome
         } catch {
             historyStore.recordFailure(reason: reason, error: String(describing: error))
             lastHistory = historyStore.loadLast()
+            if case SyncApplyError.suspectedRunaway(let creations, let existingOwned) = error {
+                pendingRunawayConfirmation = (creations: creations, existingOwned: existingOwned)
+            }
             DebugLogBuffer.shared.append(.error, "sync", "\(reason) failed: \(error)")
             return nil
         }
@@ -132,14 +154,19 @@ public final class AppSyncEngine {
         guard settings.isConfigured, settings.isEnabled || trigger == .manual else {
             throw AppSyncEngineError.notConfigured
         }
+        let force = forceNextSync
+        forceNextSync = false
         let (source, destination, supportedAvailabilities) = try resolveStores()
         let configuration = settings.configuration(supportedDestinationAvailabilities: supportedAvailabilities)
         let window = settings.window()
         let cache = SyncCacheFile.load()
         let result = try engine.synchronize(
-            source: source, destination: destination, cache: cache, configuration: configuration, window: window)
+            source: source, destination: destination, cache: cache, configuration: configuration, window: window,
+            destinationWindow: Self.padded(window), force: force)
         SyncCacheFile.save(result.cache)
-        lastCommitAt = Date()
+        if result.outcome.created > 0 || result.outcome.updated > 0 || result.outcome.deleted > 0 {
+            lastCommitAt = Date()
+        }
         return result.outcome
     }
 
@@ -201,17 +228,78 @@ public final class AppSyncEngine {
     /// `DestinationGuard`'s own doc comment. Scoped to a wide, fixed window independent of the
     /// configured sync window: the question is "does this calendar already hold foreign events at
     /// all", not "within the range this app happens to be configured to mirror right now".
-    public func validateDestinationCandidate(calendarIdentifier: String) -> Result<Void, DestinationGuardError> {
+    ///
+    /// A calendar that cannot even be read is refused (`.unableToVerify`), not treated as clean —
+    /// "clean" is a claim about content this never got to see, and reporting success anyway is
+    /// exactly the shape of guard that gets trusted later without having checked anything.
+    public func validateDestinationCandidate(calendarIdentifier: String) -> Result<Int, DestinationGuardError> {
         #if DEBUG
-            guard !fixtureMode else { return .success(()) }
+            guard !fixtureMode else { return .success(0) }
         #endif
-        guard let calendar = store.calendar(withIdentifier: calendarIdentifier) else { return .success(()) }
-        let wideWindow = DateInterval(
-            start: Date().addingTimeInterval(-2 * 365 * 24 * 3600),
-            end: Date().addingTimeInterval(2 * 365 * 24 * 3600))
+        guard let calendar = store.calendar(withIdentifier: calendarIdentifier) else {
+            return .failure(.unableToVerify)
+        }
+        let wideWindow = Self.padded(DateInterval(start: Date(), end: Date()))
         guard let events = try? EventKitDestinationStore(store: store, calendar: calendar).events(in: wideWindow)
-        else { return .success(()) }
-        return DestinationGuard.validateForConfiguration(existingEvents: events)
+        else { return .failure(.unableToVerify) }
+
+        let configuration = settings.configuration(supportedDestinationAvailabilities: [])
+        let result = DestinationGuard.validateForConfiguration(existingEvents: events, configuration: configuration)
+        if case .success(let foreignCount) = result, foreignCount > 0 {
+            DebugLogBuffer.shared.append(
+                .info, "destination-guard",
+                "picked calendar already holds \(foreignCount) event(s) stamped by another installation")
+        }
+        return result
+    }
+
+    // MARK: - Reset
+
+    /// How many of this installation's own events a reset would remove right now — computed
+    /// without applying anything, so the UI can show the count *before* asking for confirmation
+    /// rather than after. Scanned over the same widened window `performSync` uses for the
+    /// destination side, for the same reason: reset must reach an event a narrow window would
+    /// otherwise strand.
+    public func resetCandidateCount() -> Int? {
+        guard let (_, destination, supportedAvailabilities) = try? resolveStores() else { return nil }
+        let configuration = settings.configuration(supportedDestinationAvailabilities: supportedAvailabilities)
+        guard let events = try? destination.events(in: Self.padded(settings.window())) else { return nil }
+        return engine.resetPlan(destination: events, configuration: configuration).count
+    }
+
+    /// Deletes every event this installation has ever written to the configured destination —
+    /// the recovery path for the reinstall-duplication case above, and for anything else that has
+    /// gone wrong in a way nobody anticipated. Never called directly by a trigger; only ever by a
+    /// person, after `resetCandidateCount` has already told them how many events this will remove.
+    @discardableResult
+    public func performReset() async -> Int? {
+        guard let (_, destination, supportedAvailabilities) = try? resolveStores() else { return nil }
+        let configuration = settings.configuration(supportedDestinationAvailabilities: supportedAvailabilities)
+        guard let events = try? destination.events(in: Self.padded(settings.window())) else { return nil }
+        do {
+            let removed = try engine.applyReset(destination: events, configuration: configuration, to: destination)
+            if removed > 0 { lastCommitAt = Date() }
+            historyStore.recordSuccess(
+                reason: "reset",
+                outcome: SyncOutcome(created: 0, updated: 0, deleted: removed, unchanged: 0, duplicatesRemoved: 0))
+            lastHistory = historyStore.loadLast()
+            DebugLogBuffer.shared.append(.warning, "reset", "removed \(removed) event(s) written by this installation")
+            return removed
+        } catch {
+            historyStore.recordFailure(reason: "reset", error: String(describing: error))
+            lastHistory = historyStore.loadLast()
+            DebugLogBuffer.shared.append(.error, "reset", "failed: \(error)")
+            return nil
+        }
+    }
+
+    /// A generously padded interval around `window` — used wherever a check needs "does the
+    /// destination hold something far outside the range this app is configured to look at
+    /// currently" rather than "within it": the destination side of an ordinary sync (so an aged-
+    /// out mirror is still reachable by the delete pass), the destination-candidate guard, and a
+    /// reset's own scan.
+    private static func padded(_ window: DateInterval, by padding: TimeInterval = 2 * 365 * 24 * 3600) -> DateInterval {
+        DateInterval(start: window.start.addingTimeInterval(-padding), end: window.end.addingTimeInterval(padding))
     }
 
     // MARK: - Calendar access

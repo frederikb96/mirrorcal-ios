@@ -1,5 +1,9 @@
 public enum DestinationGuardError: Error, Sendable, Equatable {
     case containsUnstampedEvents(count: Int)
+    /// The candidate calendar could not be read at all — refused rather than treated as clean.
+    /// "Clean" is a claim about content this check never got to see; reporting success anyway is
+    /// exactly the shape of guard that gets trusted later and shouldn't be.
+    case unableToVerify
 }
 
 /// The mirror image of the read-only source constraint, and the bigger destructive risk of the
@@ -17,13 +21,20 @@ public enum DestinationGuard: Sendable {
     /// stamped events are already in it; a shared destination is exactly the case that guarantee
     /// exists for. This function exists so the *unstamped* mistake specifically is refused before
     /// it is even configured, with a number attached.
-    public static func validateForConfiguration(existingEvents: [DestinationEvent]) -> Result<
-        Void, DestinationGuardError
-    > {
+    ///
+    /// `.success`'s payload is how many of the existing stamped events belong to a *different*
+    /// installation than `configuration`'s — informational only, never a reason to refuse, since
+    /// a shared destination is a legitimate configuration.
+    public static func validateForConfiguration(
+        existingEvents: [DestinationEvent], configuration: SyncConfiguration = SyncConfiguration()
+    ) -> Result<Int, DestinationGuardError> {
         let unstampedCount = existingEvents.filter { $0.stamp == nil }.count
         guard unstampedCount == 0 else {
             return .failure(.containsUnstampedEvents(count: unstampedCount))
         }
-        return .success(())
+        let foreignInstallationCount = existingEvents.filter {
+            $0.stamp?.installationIdentifier != configuration.installationIdentifier
+        }.count
+        return .success(foreignInstallationCount)
     }
 }
