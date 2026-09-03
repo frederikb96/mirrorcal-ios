@@ -250,7 +250,7 @@ DEINIT_OPEN = re.compile(r"^\s*deinit\s*\{")
 #: next Mac run that fails on this shape names the type to add.
 NON_SENDABLE_APPLE_TYPE = (
     r"EKEvent|EKEventStore|EKCalendar|EKParticipant|EKRecurrenceRule|EKAlarm"
-    r"|BGTask|BGAppRefreshTask|BGProcessingTask|NWConnection|NWListener|CLLocation"
+    r"|BGTask|BGAppRefreshTask|BGProcessingTask|NWConnection|NWListener|CLLocation|UserDefaults"
 )
 NON_SENDABLE_PARAM = re.compile(rf"\b(\w+)\s*:\s*(?:{NON_SENDABLE_APPLE_TYPE})\??(?:\s*[,)])")
 FUNC_OPEN = re.compile(r"^\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:public |internal |private |fileprivate |static )*func\s+\w+")
@@ -402,6 +402,82 @@ def codable_type_embeds_non_codable_property(
     return findings
 
 
+#: A protocol declared here that refines `Sendable` — used the same way `build_codable_type_index`
+#: indexes `Codable` conformance: this file has no type checker, so conformance can only be read
+#: from what a declaration literally says.
+PROTOCOL_DECL_NAMED = re.compile(r"^\s*(?:public |internal |private |fileprivate )?protocol\s+(\w+)\s*(?::\s*([^{]+))?\{")
+
+
+def build_sendable_conforming_type_index(all_lines: dict[Path, list[str]]) -> set[str]:
+    """Every locally-declared struct/class/actor inferred `Sendable` — either its own declaration
+    names `Sendable` directly, or it conforms to a locally-declared protocol whose own declaration
+    names `Sendable` (one level of indirection, matching this file's `InstallationIdentityStore:
+    Sendable` shape; a protocol refining Sendable only through *another* local protocol is not
+    followed further).
+
+    `@unchecked Sendable` is deliberately excluded: that annotation is the author asserting the
+    compiler should not check this type, so a stored non-Sendable property there is not the Swift
+    6 error this index exists to predict — it is the documented way out of one.
+    """
+    protocols_refining_sendable: set[str] = set()
+    for lines in all_lines.values():
+        for line in lines:
+            match = PROTOCOL_DECL_NAMED.match(line)
+            if match and match.group(2) and re.search(r"\bSendable\b", match.group(2)):
+                protocols_refining_sendable.add(match.group(1))
+
+    sendable_types: set[str] = set()
+    for lines in all_lines.values():
+        for line in lines:
+            if "@unchecked Sendable" in line:
+                continue
+            match = TYPE_DECL_NAMED.match(line)
+            if not match or not match.group(2):
+                continue
+            inheritance = match.group(2)
+            if re.search(r"\bSendable\b", inheritance) or any(
+                re.search(rf"\b{re.escape(name)}\b", inheritance) for name in protocols_refining_sendable
+            ):
+                sendable_types.add(match.group(1))
+    return sendable_types
+
+
+def sendable_type_embeds_non_sendable_property(
+    lines: list[str], sendable_types: set[str]
+) -> list[tuple[int, str, str]]:
+    """A type inferred `Sendable` (see `build_sendable_conforming_type_index`) with a stored
+    property typed as a known non-Sendable Apple type.
+
+    Swift 6 rejects this with "stored property ... has non-Sendable type ..." right at the
+    property — a plain diagnostic, but neither `parse-swift.sh` (stops before type checking) nor
+    the package build (the framework types this fires on live only in the app target) can see it.
+    `@unchecked Sendable` is the documented way out and is excluded from the index this reads, not
+    flagged here.
+    """
+    findings: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        match = TYPE_DECL_NAMED.match(line)
+        if not match or match.group(1) not in sendable_types:
+            continue
+        indent = len(line) - len(line.lstrip())
+        for cursor in range(index + 1, len(lines)):
+            body = lines[cursor]
+            if body.strip() and (len(body) - len(body.lstrip())) <= indent:
+                break
+            prop = STORED_PROPERTY.match(body)
+            if not prop:
+                continue
+            prop_name, prop_type = prop.group(1), prop.group(2)
+            if re.search(rf"\b(?:{NON_SENDABLE_APPLE_TYPE})\b", prop_type):
+                findings.append((
+                    cursor + 1, body.strip(),
+                    f"'{prop_name}' is '{prop_type.strip()}', which is not Sendable — "
+                    f"'{match.group(1)}' conforms to Sendable (directly or through a protocol), "
+                    "so this needs '@unchecked Sendable' or a Sendable-safe replacement",
+                ))
+    return findings
+
+
 def unmarked_observer_token_read_in_deinit(
     lines: list[str], isolated: set[int]
 ) -> list[tuple[int, str, str]]:
@@ -450,7 +526,9 @@ def unmarked_observer_token_read_in_deinit(
     return findings
 
 
-def check(path: Path, lines: list[str], non_codable_types: set[str]) -> list[tuple[int, str, str]]:
+def check(
+    path: Path, lines: list[str], non_codable_types: set[str], sendable_types: set[str]
+) -> list[tuple[int, str, str]]:
     isolated = main_actor_line_numbers(lines)
     findings: list[tuple[int, str, str]] = detached_reads_of_isolated_statics(lines, isolated)
     findings.extend(nonisolated_uikit_access(lines))
@@ -458,6 +536,7 @@ def check(path: Path, lines: list[str], non_codable_types: set[str]) -> list[tup
     findings.extend(unmarked_observer_token_read_in_deinit(lines, isolated))
     findings.extend(sending_capture_in_task(lines))
     findings.extend(codable_type_embeds_non_codable_property(lines, non_codable_types))
+    findings.extend(sendable_type_embeds_non_sendable_property(lines, sendable_types))
 
     for index, line in enumerate(lines):
         if STORED_STATIC_VAR.match(line) and index not in isolated and "nonisolated(unsafe)" not in line:
@@ -490,10 +569,11 @@ def main() -> int:
     all_lines = {path: path.read_text(encoding="utf-8", errors="replace").splitlines() for path in files}
     declared_types, codable_types = build_codable_type_index(all_lines)
     non_codable_types = declared_types - codable_types
+    sendable_types = build_sendable_conforming_type_index(all_lines)
 
     total = 0
     for path in files:
-        for line_number, source, message in check(path, all_lines[path], non_codable_types):
+        for line_number, source, message in check(path, all_lines[path], non_codable_types, sendable_types):
             total += 1
             print(f"::error file={path},line={line_number}::{message}")
             print(f"  {path}:{line_number}: {source}")

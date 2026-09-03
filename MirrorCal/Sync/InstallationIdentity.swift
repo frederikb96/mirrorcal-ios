@@ -40,16 +40,15 @@ struct KeychainInstallationIdentityStore: InstallationIdentityStore {
 /// Where the identifier lived before this fix — `UserDefaults`, wiped by app deletion, which is
 /// the reinstall-duplication bug this replaces. Kept only so a value an earlier install already
 /// minted can be adopted into the keychain instead of orphaned; nothing writes here anymore.
+///
+/// Reads `.standard` directly rather than storing a `UserDefaults` instance: `UserDefaults` is
+/// not `Sendable`, and this type has no reason to hold one — it is a one-time migration read, not
+/// something a caller ever needs to point at a different suite.
 struct LegacyUserDefaultsInstallationIdentityStore: InstallationIdentityStore {
     private let key = "mirrorcal.installation-identifier"
-    private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func read() -> String? { defaults.string(forKey: key) }
-    func write(_ value: String) { defaults.set(value, forKey: key) }
+    func read() -> String? { UserDefaults.standard.string(forKey: key) }
+    func write(_ value: String) { UserDefaults.standard.set(value, forKey: key) }
 }
 
 /// A UUID minted once per install and threaded into every stamp this install writes, so two
