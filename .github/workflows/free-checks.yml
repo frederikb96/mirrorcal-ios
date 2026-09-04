@@ -83,7 +83,7 @@ jobs:
 
       # Dependencies are fetched and rebuilt on every run otherwise, which is most of the wall
       # time here. Keyed on the manifest so a dependency change invalidates it.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: MirrorCalKit/.build
           key: spm-${{ runner.os }}-${{ hashFiles('MirrorCalKit/Package.swift') }}
