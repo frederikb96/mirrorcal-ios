@@ -40,7 +40,7 @@ jobs:
     outputs:
       swift: ${{ steps.filter.outputs.swift }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -62,7 +62,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Swift's own documented Ubuntu dependency list, plus curl/file/ca-certificates for the
       # setup action itself — it downloads a toolchain, verifies its signature, and identifies
