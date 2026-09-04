@@ -64,7 +64,7 @@ jobs:
         with:
           xcode-version: '26.6'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/Library/Developer/Xcode/DerivedData
           key: dd-${{ runner.os }}-${{ hashFiles('MirrorCalKit/Package.swift', 'MirrorCal.xcodeproj/project.pbxproj') }}
