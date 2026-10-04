@@ -6,10 +6,6 @@ name: Release
 on:
   push:
     tags: ['v*.*.*']
-  # TestFlight builds expire after 90 days. Runs well inside that window so a failure has room to
-  # be noticed and retried before the app actually stops launching.
-  schedule:
-    - cron: '43 4 15 */2 *'
   workflow_dispatch:
     inputs:
       version:
